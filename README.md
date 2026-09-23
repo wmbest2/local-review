@@ -2,6 +2,8 @@
 
 Local, GitHub-style review for agent-written changes. You review in a browser and leave line comments; the agent reads them and replies from the CLI. No push required. Python 3 stdlib only.
 
+![local-review UI: review threads with agent replies inline in a syntax-highlighted diff](docs/screenshot.png)
+
 ## Install
 
 ```sh
