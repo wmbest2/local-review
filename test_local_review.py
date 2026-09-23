@@ -117,6 +117,41 @@ class LocalReviewTest(unittest.TestCase):
         with redirect_stdout(out):
             lr.cmd_watch(self.repo, SimpleNamespace(once=True, interval=0.1))
 
+    def test_clean(self):
+        c1 = lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "one"})
+        r1 = lr.submit_review(self.repo, "")
+        lr.update_comment(self.repo, c1["id"], "status", {"status": "resolved"})
+        c2 = lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "two"})
+        r2 = lr.submit_review(self.repo, "")
+        refs = lambda: {rid for _, rid, _ in lr.snapshot_refs(self.repo)}
+        self.assertEqual(refs(), {r1["id"], r2["id"]})
+
+        self.assertIn("Would remove 1 thread", self.cli(lr.cmd_clean, all=False, force=False, dry_run=True))
+        self.assertEqual(refs(), {r1["id"], r2["id"]})
+
+        self.cli(lr.cmd_clean, all=False, force=False, dry_run=False)
+        st = lr.load_state(self.repo)
+        self.assertEqual([c["id"] for c in st["comments"]], [c2["id"]])  # resolved thread archived
+        self.assertEqual(refs(), {r2["id"]})  # latest snapshot kept for "since last review"
+        self.assertEqual(set(self.files("since")), set())
+        with open(os.path.join(self.repo.state_dir, "archive.json")) as f:
+            self.assertEqual([c["id"] for c in json.load(f)], [c1["id"]])
+
+        with self.assertRaises(lr.UserError):  # c2 is still open
+            self.cli(lr.cmd_clean, all=True, force=False, dry_run=False)
+        self.cli(lr.cmd_clean, all=True, force=True, dry_run=False)
+        self.assertEqual(lr.load_state(self.repo)["comments"], [])
+        self.assertEqual(refs(), set())
+
+    def test_prune_orphans(self):
+        lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "x"})
+        review = lr.submit_review(self.repo, "")
+        head = self.repo.head()
+        self.repo.g("update-ref", "refs/local-review/rdeadbe", head)  # snapshot from a deleted worktree
+        self.assertEqual(lr.prune_orphans(self.repo), [])  # too young to prune
+        self.assertEqual(lr.prune_orphans(self.repo, min_age=0), ["refs/local-review/rdeadbe"])
+        self.assertEqual({rid for _, rid, _ in lr.snapshot_refs(self.repo)}, {review["id"]})
+
     def test_generic_line_needs_context(self):
         self.assertIsNone(lr.locate(["x", "}", "y"], {"line": 2, "line_text": "}", "before": ["a"], "after": ["b"]}))
         self.assertEqual(lr.locate(["a", "}", "b"], {"line": 9, "line_text": "}", "before": ["a"], "after": ["b"]}), 2)

@@ -40,7 +40,17 @@ Each comment stores its line's text plus 3 lines of context either side. When th
 ## Storage
 - `<git-dir>/local-review/state.json`: per worktree, never committed.
 - `refs/local-review/<review-id>`: the working-tree snapshot for each submitted review, used by "Since last review". Snapshots are built from a throwaway index, so your real index and stash are never touched.
-- Clean up with `git for-each-ref --format='%(refname)' refs/local-review | xargs -n1 git update-ref -d`.
+
+## Cleanup
+Snapshots from every review are kept for the whole session. When the work is finished (usually the agent does this when you say so):
+
+```sh
+local-review clean            # archive resolved threads to archive.json; keep only the latest snapshot
+local-review clean --dry-run  # show what would be removed
+local-review clean --all      # discard this worktree's whole review (refuses with draft/open comments unless --force)
+```
+
+Snapshots that no worktree refers to anymore (e.g. the worktree was deleted) are pruned automatically each time `local-review` starts, once they're over an hour old. `clean` prunes them too. `state.json` and `archive.json` live in the worktree's git dir, so `git worktree remove` deletes them.
 
 ## Watching
 `local-review watch` prints one line each time a review is submitted. `--once` exits after the first submission. An agent can run `watch --once` in the background, address the review when it exits, then start it again.

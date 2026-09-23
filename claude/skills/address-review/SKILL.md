@@ -25,6 +25,10 @@ The user reviews your changes in the `local-review` browser UI and submits line 
 
 If the user asks you to watch for reviews, run `local-review watch --once` in the background (Bash with `run_in_background`) from the reviewed worktree. It exits when a review is submitted. When it exits, follow the steps above, then start it again so the next review is picked up too. Stop re-arming when the user says to.
 
+## Cleaning up
+
+Snapshots from earlier reviews in the session are kept on purpose, so never clean up in the middle of a review. Run `local-review clean` once the work is finished: the user approves it, says it's merged or done, or asks you to wrap up. It archives resolved threads and drops every snapshot except the latest. Use `clean --all` only when the user wants the whole review thrown away; it refuses if draft or open comments would be lost, unless `--force` is passed. Report what the command removed.
+
 ## Notes
 
 - `local-review list --all` also shows replied, addressed and resolved threads, if you need history.

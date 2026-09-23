@@ -9,6 +9,7 @@ State lives in <git-dir>/local-review/state.json, so it is per-worktree and neve
 """
 import argparse
 import fcntl
+import glob
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ from urllib.parse import parse_qs, urlparse
 HERE = os.path.dirname(os.path.realpath(__file__))
 CONTEXT_LINES = 3  # lines of surrounding code stored with each comment to re-anchor it after edits
 REVIEWER = "reviewer"
+ORPHAN_MIN_AGE_S = 3600  # never prune snapshots this young: another worktree may be mid-submit
 AGENT = "agent"
 
 
@@ -547,6 +549,81 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 400)
 
 
+# ----------------------------------------------------------------------------------------- cleanup
+
+
+def snapshot_refs(repo):
+    """(refname, review_id, commit_time) for every snapshot ref; refs are shared by all worktrees."""
+    out = repo.g("for-each-ref", "--format=%(refname) %(committerdate:unix)", "refs/local-review/")
+    refs = []
+    for line in out.split("\n"):
+        if line:
+            ref, ts = line.rsplit(" ", 1)
+            refs.append((ref, ref.rsplit("/", 1)[-1], int(ts or 0)))
+    return refs
+
+
+def referenced_review_ids(repo):
+    """Review ids still recorded in any worktree's state (main checkout and linked worktrees)."""
+    common = repo.g("rev-parse", "--git-common-dir").strip()
+    common = common if os.path.isabs(common) else os.path.join(repo.root, common)
+    paths = [os.path.join(common, "local-review", "state.json")]
+    paths += glob.glob(os.path.join(common, "worktrees", "*", "local-review", "state.json"))
+    ids = set()
+    for path in paths:
+        try:
+            with open(path) as f:
+                ids |= {r["id"] for r in json.load(f).get("reviews", [])}
+        except (OSError, ValueError):
+            pass
+    return ids
+
+
+def prune_orphans(repo, dry_run=False, min_age=ORPHAN_MIN_AGE_S):
+    """Deletes snapshot refs no worktree refers to anymore (e.g. the worktree was removed)."""
+    keep = referenced_review_ids(repo)
+    cutoff = time.time() - min_age
+    removed = [ref for ref, rid, ts in snapshot_refs(repo) if rid not in keep and ts <= cutoff]
+    if not dry_run:
+        for ref in removed:
+            repo.g("update-ref", "-d", ref, check=False)
+    return removed
+
+
+def cmd_clean(repo, args):
+    archive_path = os.path.join(repo.state_dir, "archive.json")
+    with state_txn(repo, write=not args.dry_run) as st:
+        if args.all:
+            pending = [c for c in st["comments"] if c["status"] in ("draft", "open")]
+            if pending and not args.force:
+                raise UserError(f"{len(pending)} draft/open comment(s) would be discarded; pass --force to do it anyway")
+            drop_ids = {c["id"] for c in st["comments"]}
+            drop_reviews = list(st["reviews"])
+        else:
+            drop_ids = {c["id"] for c in st["comments"] if c["status"] == "resolved"}
+            # The latest snapshot stays so "Since last review" still works next session.
+            drop_reviews = st["reviews"][:-1]
+        dropped = [c for c in st["comments"] if c["id"] in drop_ids]
+        if not args.dry_run:
+            if dropped:
+                try:
+                    with open(archive_path) as f:
+                        archive = json.load(f)
+                except (OSError, ValueError):
+                    archive = []
+                with open(archive_path, "w") as f:
+                    json.dump(archive + [dict(c, archived_at=now()) for c in dropped], f, indent=2)
+            for r in drop_reviews:
+                repo.g("update-ref", "-d", f"refs/local-review/{r['id']}", check=False)
+            st["comments"] = [c for c in st["comments"] if c["id"] not in drop_ids]
+            dropped_review_ids = {r["id"] for r in drop_reviews}
+            st["reviews"] = [r for r in st["reviews"] if r["id"] not in dropped_review_ids]
+    orphans = prune_orphans(repo, dry_run=args.dry_run)
+    verb = "Would remove" if args.dry_run else "Removed"
+    print(f"{verb} {len(dropped)} thread(s) (archived to {archive_path}), {len(drop_reviews)} old snapshot(s), "
+          f"{len(orphans)} orphaned snapshot(s).")
+
+
 def probe(port):
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/meta", timeout=0.5) as r:
@@ -560,6 +637,10 @@ def cmd_serve(repo, args):
     if not repo.rev(base):
         raise UserError(f"unknown base ref: {base}")
     port = args.port or 7400 + int(hashlib.sha1(repo.root.encode()).hexdigest(), 16) % 500
+    try:
+        prune_orphans(repo)
+    except UserError:
+        pass  # housekeeping only; never block opening the UI
     running = probe(port)
     if running and running.get("root") == repo.root:
         url = f"http://127.0.0.1:{port}/"
@@ -709,6 +790,11 @@ def main():
     s = sub.add_parser("status", help="print comment counts")
     s.add_argument("--hook", action="store_true", help="print a reminder only if comments are open")
 
+    s = sub.add_parser("clean", help="archive resolved threads and drop old snapshots (run when the work is done)")
+    s.add_argument("--all", action="store_true", help="discard this worktree's whole review, incl. latest snapshot")
+    s.add_argument("--force", action="store_true", help="with --all: discard even draft/open comments")
+    s.add_argument("--dry-run", action="store_true")
+
     s = sub.add_parser("watch", help="print a line whenever a review is submitted (for agents)")
     s.add_argument("--once", action="store_true", help="exit after the first submitted review")
     s.add_argument("--interval", type=float, default=1.0, help="poll interval in seconds")
@@ -719,7 +805,7 @@ def main():
     try:
         repo = Repo(args.path)
         {"serve": cmd_serve, "list": cmd_list, "reply": cmd_reply, "status": cmd_status,
-         "watch": cmd_watch}[args.cmd](repo, args)
+         "watch": cmd_watch, "clean": cmd_clean}[args.cmd](repo, args)
     except UserError as e:
         if getattr(args, "hook", False):
             return
