@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>local-review</title>
+<link rel="stylesheet" href="/vendor/hljs-theme.css">
+<script src="/vendor/highlight.min.js"></script>
+<script src="/vendor/hljs-groovy.min.js"></script>
+<script src="/vendor/hljs-gradle.min.js"></script>
+<script src="/vendor/hljs-properties.min.js"></script>
+<script src="/vendor/hljs-protobuf.min.js"></script>
+<script src="/vendor/hljs-dart.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --fg-soft: #3d444d; --muted: #6e7781; --faint: #8c959f;
+    --border: #d8dee4; --divider: #eaeef2; --panel: #f6f8fa;
+    --add-bg: #e6ffec; --add-num: #d1f8d9; --add-sign: #1a7f37;
+    --del-bg: #ffebe9; --del-num: #ffdcd7; --del-sign: #cf222e;
+    --hunk-bg: #f0f6ff; --hunk-fg: #57606a;
+    --accent: #0969da; --primary: #1f883d; --warn: #9a6700; --warn-bg: #fff8c5; --danger: #cf222e; --draft: #8250df;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #d1d7e0; --fg-soft: #b7bdc8; --muted: #8b949e; --faint: #6e7681;
+      --border: #30363d; --divider: #21262d; --panel: #151b23;
+      --add-bg: rgba(46, 160, 67, .12); --add-num: rgba(46, 160, 67, .22); --add-sign: #3fb950;
+      --del-bg: rgba(248, 81, 73, .10); --del-num: rgba(248, 81, 73, .20); --del-sign: #f85149;
+      --hunk-bg: rgba(56, 139, 253, .08); --hunk-fg: #8b949e;
+      --accent: #4493f8; --primary: #238636; --warn: #d29922; --warn-bg: #272115; --danger: #f85149; --draft: #ab7df8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.6 var(--sans); background: var(--bg); color: var(--fg);
+         -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  header { position: sticky; top: 0; z-index: 10; display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+           height: 52px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: -.01em; }
+  header .spacer { flex: 1; }
+  header label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  select, input[type=text], textarea, button { font: inherit; color: var(--fg); background: var(--bg);
+           border: 1px solid var(--border); border-radius: 6px; }
+  select, input[type=text] { padding: 3px 8px; font-size: 13px; }
+  input[type=text]:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  button { padding: 4px 12px; cursor: pointer; background: var(--panel); font-size: 13px; font-weight: 500; }
+  button:hover { border-color: var(--faint); }
+  button.primary { background: var(--primary); color: #fff; border-color: transparent; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.link { border: none; background: none; color: var(--accent); padding: 0 4px; }
+  button.link:hover { text-decoration: underline; }
+  button:disabled { opacity: .5; cursor: default; }
+  textarea { width: 100%; min-height: 80px; padding: 10px 12px; resize: vertical; line-height: 1.55; font-size: 14px; }
+  #banner { display: none; padding: 8px 20px; background: var(--warn-bg); color: var(--fg); font-size: 13px;
+            border-bottom: 1px solid var(--border); }
+  #banner.show { display: flex; gap: 12px; align-items: center; }
+  #layout { display: flex; align-items: flex-start; }
+  aside { position: sticky; top: 52px; width: 300px; flex-shrink: 0; max-height: calc(100vh - 52px); overflow: auto;
+          padding: 16px 8px 16px 16px; font-size: 13px; }
+  aside a { display: flex; gap: 8px; padding: 3px 8px; border-radius: 6px; color: var(--fg-soft); text-decoration: none;
+            align-items: center; line-height: 1.5; }
+  aside a:hover { background: var(--panel); color: var(--fg); }
+  aside a.viewed { color: var(--faint); }
+  aside .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  aside .cnt { font-size: 11px; background: var(--accent); color: #fff; border-radius: 10px; padding: 0 7px; line-height: 18px; }
+  .st { font-family: var(--mono); font-size: 11px; width: 12px; font-weight: 600; color: var(--warn); }
+  .st.added { color: var(--add-sign); } .st.deleted { color: var(--del-sign); } .st.modified { color: var(--muted); }
+  main { flex: 1; min-width: 0; padding: 16px 20px 96px 8px; }
+  .meta { color: var(--muted); margin-bottom: 16px; font-size: 13px; }
+  .meta details { display: inline; }
+  .panel { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; }
+  .panel > h2 { margin: 0; padding: 10px 16px; font-size: 13px; font-weight: 600; background: var(--panel);
+                border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0; }
+  .panel > .inner { padding: 12px 16px; }
+  .file { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: clip; }
+  .fhead { position: sticky; top: 52px; z-index: 5; display: flex; gap: 12px; align-items: center; padding: 8px 12px;
+           background: var(--panel); border-bottom: 1px solid var(--border); }
+  .fhead .path { font-family: var(--mono); font-size: 12.5px; flex: 1; overflow-wrap: anywhere; font-weight: 500; }
+  .fhead .toggle { width: 24px; padding: 0; border: none; background: none; color: var(--muted); }
+  .adds, .dels { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .adds { color: var(--add-sign); } .dels { color: var(--del-sign); }
+  .file.collapsed .fbody { display: none; }
+  .file.collapsed .fhead { border-bottom: none; }
+  .note { padding: 16px; color: var(--muted); font-size: 13px; }
+  table.diff { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; table-layout: fixed; }
+  table.diff col.num { width: 56px; }
+  td.num { color: var(--faint); text-align: right; padding: 0 10px; user-select: none; vertical-align: top;
+           font-size: 12px; line-height: 22px; }
+  td.code { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 16px 0 26px; position: relative;
+            line-height: 22px; tab-size: 4; color: var(--fg); }
+  tr.add td.code { background: var(--add-bg); } tr.add td.num { background: var(--add-num); }
+  tr.del td.code { background: var(--del-bg); } tr.del td.num { background: var(--del-num); }
+  tr.hunk td { background: var(--hunk-bg); color: var(--hunk-fg); padding: 4px 12px; line-height: 20px; font-size: 12px; }
+  .sign { position: absolute; left: 10px; color: var(--faint); user-select: none; }
+  tr.add .sign { color: var(--add-sign); } tr.del .sign { color: var(--del-sign); }
+  .addc { position: absolute; left: -11px; top: 2px; width: 20px; height: 18px; padding: 0; line-height: 16px;
+          border-radius: 4px; background: var(--accent); color: #fff; border: none; font-weight: 700; font-size: 13px;
+          display: none; z-index: 2; }
+  tr.ln:hover .addc { display: block; }
+  tr.ln:hover td.code { box-shadow: inset 2px 0 0 var(--accent); }
+  tr.thread-row > td { padding: 10px 16px; background: var(--panel); border-top: 1px solid var(--divider);
+                       border-bottom: 1px solid var(--divider); font-family: var(--sans); font-size: 14px; }
+  .thread { border: 1px solid var(--border); border-radius: 8px; margin: 4px 0 10px; max-width: 860px; background: var(--bg); }
+  .thread.st-draft { border-color: var(--draft); }
+  .thead { display: flex; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--divider);
+           font-size: 12px; }
+  .thread.folded .thead { border-bottom: none; }
+  .thread.folded .tbody { display: none; }
+  .thead .loc { font-family: var(--mono); flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; }
+  .thead .id { font-family: var(--mono); color: var(--faint); font-size: 11px; }
+  .badge { font-size: 11px; border-radius: 10px; padding: 0 8px; line-height: 18px; border: 1px solid var(--border);
+           font-weight: 500; white-space: nowrap; color: var(--muted); }
+  .badge.draft { color: var(--draft); border-color: var(--draft); }
+  .badge.open { color: var(--accent); border-color: var(--accent); }
+  .badge.replied, .badge.outdated { color: var(--warn); border-color: var(--warn); }
+  .badge.addressed { color: var(--add-sign); border-color: var(--add-sign); }
+  .msg { padding: 10px 14px; border-bottom: 1px solid var(--divider); }
+  .msg:last-child { border-bottom: none; }
+  .msg .who { font-weight: 600; font-size: 13px; } .msg .when { color: var(--faint); font-size: 12px; margin-left: 8px; }
+  .msg.agent .who { color: var(--draft); }
+  .msg .body { margin-top: 4px; overflow-wrap: anywhere; max-width: 75ch; line-height: 1.6; color: var(--fg-soft); }
+  .msg .body pre, pre.ctx { background: var(--panel); padding: 10px 12px; border-radius: 6px; overflow: auto;
+                            border: 1px solid var(--divider); font-family: var(--mono); font-size: 12.5px;
+                            line-height: 1.55; margin: 6px 0; white-space: pre; max-width: none; }
+  .msg .body code { background: var(--panel); padding: .1em .35em; border-radius: 4px; font-family: var(--mono);
+                    font-size: 85%; border: 1px solid var(--divider); }
+  .reply { padding: 10px 14px; border-top: 1px solid var(--divider); }
+  .reply textarea { min-height: 38px; }
+  .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .cform { max-width: 860px; margin: 4px 0 10px; }
+  .hint { color: var(--muted); font-size: 12px; margin-right: auto; align-self: center; }
+  dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--fg);
+           width: 560px; padding: 20px; }
+  dialog h3 { font-size: 16px; font-weight: 600; }
+  dialog::backdrop { background: rgba(0, 0, 0, .4); }
+  #loading { padding: 48px; color: var(--muted); text-align: center; }
+  .err { color: var(--danger); white-space: pre-wrap; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">local-review</h1>
+  <label>View
+    <select id="mode">
+      <option value="branch">Branch vs base</option>
+      <option value="working">Uncommitted changes</option>
+      <option value="since">Since last review</option>
+    </select>
+  </label>
+  <label id="base-wrap">Base <input id="base" type="text" size="16"></label>
+  <label>Context
+    <select id="context">
+      <option value="3">3 lines</option>
+      <option value="10">10 lines</option>
+      <option value="100000">Full file</option>
+    </select>
+  </label>
+  <button id="refresh" title="Re-read the working tree (r)">Refresh</button>
+  <span class="spacer"></span>
+  <span id="counts" class="hint"></span>
+  <button id="submit" class="primary">Submit review</button>
+</header>
+<div id="banner"><span id="banner-text"></span><button id="banner-reload">Reload diff</button><button id="banner-close" class="link">Dismiss</button></div>
+<div id="layout">
+  <aside id="files"></aside>
+  <main>
+    <div id="loading">Loading…</div>
+    <div id="content" hidden>
+      <div class="meta" id="viewmeta"></div>
+      <div class="panel" id="general">
+        <h2>Review conversation</h2>
+        <div class="inner">
+          <div id="general-threads"></div>
+          <button id="add-general" class="link">+ Add a general comment</button>
+        </div>
+      </div>
+      <div class="panel" id="other" hidden>
+        <h2>Comments not shown in this diff</h2>
+        <div class="inner" id="other-threads"></div>
+      </div>
+      <div id="diff"></div>
+    </div>
+  </main>
+</div>
+<dialog id="submit-dlg">
+  <h3 style="margin-top:0">Submit review</h3>
+  <p class="hint" id="submit-info"></p>
+  <textarea id="summary" placeholder="Optional overall summary for the agent…"></textarea>
+  <div class="btns">
+    <span class="err" id="submit-err"></span>
+    <button id="submit-cancel">Cancel</button>
+    <button id="submit-go" class="primary">Submit review</button>
+  </div>
+</dialog>
+<script>
+'use strict';
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type': 'application/json', 'X-Local-Review': '1'}, body: JSON.stringify(body)};
+  const r = await fetch(path, opts);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+// Tiny markdown: fenced code, inline code, bold. Everything is escaped first.
+function md(text) {
+  const parts = String(text).split(/```[^\n]*\n?/);
+  return parts.map((p, i) => {
+    if (i % 2 === 1) return `<pre>${esc(p.replace(/\n$/, ''))}</pre>`;
+    return esc(p).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+      .replace(/\n/g, '<br>');
+  }).join('');
+}
+
+function when(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
+}
+
+let meta, view, comments = [], reviews = [], version = null, pendingRender = false;
+const unfolded = new Set();
+const key = k => `lr:${meta.root}:${k}`;
+const pref = (k, d) => localStorage.getItem(key(k)) ?? d;
+const setPref = (k, v) => localStorage.setItem(key(k), v);
+
+async function init() {
+  meta = await api('/api/meta');
+  document.title = `review · ${meta.name}`;
+  $('#title').textContent = `${meta.name} · ${meta.branch}`;
+  $('#mode').value = pref('mode', meta.mode);
+  $('#base').value = pref('base', meta.base);
+  $('#context').value = pref('context', '3');
+  $('#mode').onchange = () => { setPref('mode', $('#mode').value); loadDiff(); };
+  $('#base').onchange = () => { setPref('base', $('#base').value.trim()); loadDiff(); };
+  $('#context').onchange = () => { setPref('context', $('#context').value); loadDiff(); };
+  $('#refresh').onclick = () => loadDiff();
+  $('#banner-reload').onclick = () => { hideBanner(); loadDiff(); };
+  $('#banner-close').onclick = hideBanner;
+  $('#submit').onclick = openSubmit;
+  $('#submit-cancel').onclick = () => $('#submit-dlg').close();
+  $('#submit-go').onclick = doSubmit;
+  $('#add-general').onclick = () => openForm($('#general-threads'), {file: null});
+  document.addEventListener('click', onClick);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.tagName === 'TEXTAREA') {
+      const btn = e.target.parentElement.querySelector('button.primary');
+      if (btn) { e.preventDefault(); btn.click(); }
+    } else if (e.key === 'r' && !['TEXTAREA', 'INPUT', 'SELECT'].includes(e.target.tagName) && !e.metaKey && !e.ctrlKey) {
+      loadDiff();
+    }
+  });
+  await loadComments();
+  await loadDiff();
+  setInterval(poll, 3000);
+}
+
+async function loadDiff() {
+  const mode = $('#mode').value;
+  $('#base-wrap').style.display = mode === 'branch' ? '' : 'none';
+  $('#mode option[value=since]').disabled = !reviews.length;
+  const q = new URLSearchParams({mode, base: $('#base').value.trim(), context: $('#context').value});
+  $('#loading').hidden = false;
+  $('#loading').textContent = 'Loading…';
+  try {
+    view = await api(`/api/diff?${q}`);
+  } catch (e) {
+    $('#loading').innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    $('#content').hidden = true;
+    return;
+  }
+  $('#loading').hidden = true;
+  $('#content').hidden = false;
+  renderDiff();
+  renderComments();
+}
+
+async function loadComments(fromPoll = false) {
+  const j = await api('/api/comments');
+  const changed = version !== null && j.v !== version;
+  version = j.v;
+  comments = j.comments;
+  reviews = j.reviews;
+  if (!view) return;
+  if (fromPoll && changed) showBanner('Review comments changed — the agent may have updated the code.');
+  if (typingInThread()) { pendingRender = true; return; }
+  renderComments();
+}
+
+async function poll() {
+  try {
+    const {v} = await api('/api/version');
+    if (v !== version) await loadComments(true);
+    else if (pendingRender && !typingInThread()) { pendingRender = false; renderComments(); }
+  } catch (e) { /* server stopped; keep the page as-is */ }
+}
+
+function typingInThread() {
+  return $$('.thread textarea').some(t => t.value.trim() || t === document.activeElement);
+}
+
+function showBanner(text) { $('#banner-text').textContent = text; $('#banner').classList.add('show'); }
+function hideBanner() { $('#banner').classList.remove('show'); }
+
+// ------------------------------------------------------------------------------------------ diff
+
+const LARGE = 1500;
+const LANG_ALIASES = {toml: 'ini', cfg: 'ini', conf: 'ini', pro: 'properties', mdx: 'markdown'};
+
+function langFor(path) {
+  if (typeof hljs === 'undefined' || !path) return null;
+  const name = path.split('/').pop().toLowerCase();
+  if (name === 'dockerfile' || name === 'makefile') return hljs.getLanguage(name) ? name : null;
+  const ext = name.includes('.') ? name.split('.').pop() : '';
+  const lang = LANG_ALIASES[ext] || ext;
+  return lang && hljs.getLanguage(lang) ? lang : null;
+}
+
+// Highlights a block of lines together (so multi-line strings/comments are tokenized correctly) and
+// splits the result back into per-line HTML, closing and reopening spans that cross line breaks.
+function highlightLines(lines, lang) {
+  if (!lang || !lines.length) return lines.map(esc);
+  let html;
+  try { html = hljs.highlight(lines.join('\n'), {language: lang, ignoreIllegals: true}).value; }
+  catch (e) { return lines.map(esc); }
+  const out = [], open = [];
+  let cur = '';
+  const re = /(<span[^>]*>)|(<\/span>)|([^<]+)/g;
+  let m;
+  while ((m = re.exec(html))) {
+    if (m[1]) { open.push(m[1]); cur += m[1]; }
+    else if (m[2]) { open.pop(); cur += m[2]; }
+    else m[3].split('\n').forEach((part, i) => {
+      if (i > 0) { out.push(cur + '</span>'.repeat(open.length)); cur = open.join(''); }
+      cur += part;
+    });
+  }
+  out.push(cur);
+  return out.length === lines.length ? out : lines.map(esc);
+}
+
+function renderDiff() {
+  const files = view.files;
+  const c = view.commits.length;
+  $('#viewmeta').innerHTML = `${esc(view.label)} · ${files.length} file${files.length === 1 ? '' : 's'}` +
+    (view.mode === 'branch' ? ` · <details><summary style="display:inline;cursor:pointer">${c} commit${c === 1 ? '' : 's'}</summary>` +
+      `<pre class="ctx">${esc(view.commits.join('\n') || '(no commits; uncommitted changes only)')}</pre></details>` : '');
+  $('#diff').innerHTML = files.length ? files.map(fileHtml).join('') : '<div class="note">No changes in this view.</div>';
+  files.forEach((f, i) => {
+    if (isViewed(f)) $(`#f${i}`).classList.add('collapsed');
+    else if (f.additions + f.deletions <= LARGE) fillBody(i);
+  });
+  renderFileList();
+}
+
+function fileHtml(f, i) {
+  const path = f.status === 'renamed' ? `${esc(f.old_path)} → ${esc(f.new_path)}` : esc(f.path);
+  return `<section class="file" id="f${i}" data-i="${i}">
+    <div class="fhead">
+      <button class="toggle" data-act="toggle-file" title="Collapse">▾</button>
+      <span class="st ${f.status}">${f.status[0].toUpperCase()}</span>
+      <span class="path">${path}</span>
+      <span class="adds">+${f.additions}</span><span class="dels">−${f.deletions}</span>
+      <button class="link" data-act="file-comment" ${f.new_path ? '' : 'hidden'}>Comment on file</button>
+      <label class="hint"><input type="checkbox" data-act="viewed" ${isViewed(f) ? 'checked' : ''}> Viewed</label>
+    </div>
+    <div class="fbody">
+      <div class="outside"></div>
+      <div class="rows">${f.additions + f.deletions > LARGE
+        ? `<div class="note">Large diff (${f.additions + f.deletions} lines). <button data-act="load-file">Load diff</button></div>` : ''}</div>
+    </div>
+  </section>`;
+}
+
+function fillBody(i) {
+  const f = view.files[i];
+  const el = $(`#f${i} .rows`);
+  if (el.dataset.filled) return;
+  el.dataset.filled = '1';
+  if (f.binary) { el.innerHTML = '<div class="note">Binary file</div>'; return; }
+  if (!f.hunks.length) { el.innerHTML = `<div class="note">${f.status === 'renamed' ? 'Renamed without changes' : 'No textual changes'}</div>`; return; }
+  const rows = [];
+  const oldLang = langFor(f.old_path), newLang = langFor(f.new_path);
+  for (const h of f.hunks) {
+    rows.push(`<tr class="hunk"><td colspan="3">${esc(h.header)}</td></tr>`);
+    // Old side (ctx + del) and new side (ctx + add) are each highlighted as a contiguous block.
+    const oldHtml = highlightLines(h.lines.filter(l => l.t !== 'add').map(l => l.s), oldLang);
+    const newHtml = highlightLines(h.lines.filter(l => l.t !== 'del').map(l => l.s), newLang);
+    let oi = 0, ni = 0;
+    for (const l of h.lines) {
+      const code = l.t === 'del' ? oldHtml[oi++] : l.t === 'add' ? newHtml[ni++] : (oi++, newHtml[ni++]);
+      const sign = l.t === 'add' ? '+' : l.t === 'del' ? '-' : ' ';
+      const side = l.t === 'del' ? 'old' : 'new';
+      const line = l.t === 'del' ? l.o : l.n;
+      rows.push(`<tr class="ln ${l.t}" data-side="${side}" data-line="${line}" data-o="${l.o ?? ''}" data-n="${l.n ?? ''}">` +
+        `<td class="num">${l.o ?? ''}</td><td class="num">${l.n ?? ''}</td>` +
+        `<td class="code"><button class="addc" data-act="line-comment" title="Comment">+</button>` +
+        `<span class="sign">${sign}</span>${code}</td></tr>`);
+    }
+  }
+  el.innerHTML = `<table class="diff"><colgroup><col class="num"><col class="num"><col></colgroup><tbody>${rows.join('')}</tbody></table>`;
+}
+
+function isViewed(f) { return pref(`viewed:${f.path}`, '') === f.hash; }
+
+function renderFileList() {
+  const counts = {};
+  for (const c of comments) if (c.file && ['draft', 'open', 'replied', 'addressed'].includes(c.status)) counts[c.file] = (counts[c.file] || 0) + 1;
+  $('#files').innerHTML = view.files.map((f, i) =>
+    `<a href="#f${i}" class="${isViewed(f) ? 'viewed' : ''}" title="${esc(f.path)}">
+      <span class="st ${f.status}">${f.status[0].toUpperCase()}</span><span class="name">${esc(f.path)}</span>
+      ${counts[f.path] ? `<span class="cnt">${counts[f.path]}</span>` : ''}</a>`).join('');
+}
+
+// -------------------------------------------------------------------------------------- comments
+
+function renderComments() {
+  $$('.thread').forEach(t => t.remove());
+  $$('tr.thread-row').forEach(r => { if (!r.querySelector('.cform')) r.remove(); });
+  const fileIdx = {}, oldIdx = {};
+  view.files.forEach((f, i) => { if (f.new_path) fileIdx[f.new_path] = i; if (f.old_path) oldIdx[f.old_path] = i; });
+  let other = 0;
+  const general = comments.filter(c => !c.file);
+  for (const c of general) $('#general-threads').appendChild(threadEl(c, false));
+  for (const c of comments.filter(c => c.file)) {
+    const i = c.side === 'old' ? (c.old_rev === view.old_rev ? oldIdx[c.file] : undefined) : fileIdx[c.file];
+    if (i === undefined) { $('#other-threads').appendChild(threadEl(c, true)); other++; continue; }
+    const body = $(`#f${i} .rows`);
+    const row = !c.outdated && c.current_line &&
+      body.querySelector(c.side === 'old' ? `tr.ln[data-o="${c.current_line}"]` : `tr.ln[data-n="${c.current_line}"]`);
+    if (row) threadContainer(row).insertBefore(threadEl(c, false), threadContainer(row).querySelector('.cform'));
+    else $(`#f${i} .outside`).appendChild(threadEl(c, true));
+  }
+  $('#other').hidden = !other;
+  const drafts = comments.filter(c => c.status === 'draft').length;
+  const open = comments.filter(c => c.status === 'open').length;
+  const waiting = comments.filter(c => ['replied', 'addressed'].includes(c.status)).length;
+  $('#counts').textContent = [drafts && `${drafts} draft`, open && `${open} open`, waiting && `${waiting} awaiting you`]
+    .filter(Boolean).join(' · ');
+  $('#submit').textContent = drafts ? `Submit review (${drafts})` : 'Submit review';
+  $('#mode option[value=since]').disabled = !reviews.length;
+  renderFileList();
+}
+
+function threadContainer(row) {
+  let next = row.nextElementSibling;
+  if (!next || !next.classList.contains('thread-row')) {
+    next = document.createElement('tr');
+    next.className = 'thread-row';
+    next.innerHTML = '<td colspan="3"></td>';
+    row.after(next);
+  }
+  return next.firstElementChild;
+}
+
+function locLabel(c) {
+  if (!c.file) return '';
+  if (c.outdated) return `${c.file} · originally line ${c.anchor.line}`;
+  return `${c.file}:${c.current_line}${c.side === 'old' ? ' (old)' : ''}`;
+}
+
+function threadEl(c, showLoc) {
+  const el = document.createElement('div');
+  const folded = (c.status === 'resolved' || c.status === 'addressed' && c.outdated) && !unfolded.has(c.id);
+  el.className = `thread st-${c.status}${folded ? ' folded' : ''}`;
+  el.dataset.id = c.id;
+  const actions = c.status === 'draft'
+    ? `<button class="link" data-act="edit">Edit</button><button class="link" data-act="delete">Delete</button>`
+    : c.status === 'resolved' ? `<button class="link" data-act="reopen">Reopen</button>`
+    : `<button class="link" data-act="resolve">Resolve</button>`;
+  const msgs = [{author: c.author, body: c.body, at: c.submitted_at || c.created_at}, ...c.replies];
+  const ctx = c.file && (showLoc || c.outdated) && c.anchor
+    ? `<pre class="ctx">${esc([...c.anchor.before, c.anchor.line_text, ...c.anchor.after].join('\n'))}</pre>` : '';
+  el.innerHTML = `
+    <div class="thead">
+      <button class="link" data-act="fold" title="Fold">${folded ? '▸' : '▾'}</button>
+      <span class="badge ${c.status}">${c.status === 'replied' ? 'agent replied' : c.status}</span>
+      ${c.outdated ? '<span class="badge outdated">outdated</span>' : ''}
+      <span class="loc">${showLoc || c.outdated ? esc(locLabel(c)) : ''}${folded ? ` ${esc(c.body.slice(0, 80))}` : ''}</span>
+      <span class="id">${c.id}</span>${actions}
+    </div>
+    <div class="tbody">
+      ${ctx ? `<div class="msg">${ctx}</div>` : ''}
+      ${msgs.map(m => `<div class="msg ${m.author === 'reviewer' ? '' : 'agent'}">
+        <span class="who">${m.author === 'reviewer' ? 'You' : esc(m.author)}</span><span class="when">${when(m.at)}</span>
+        <div class="body">${md(m.body)}</div></div>`).join('')}
+      ${c.status === 'draft' ? '' : `<div class="reply"><textarea placeholder="Reply…  (⌘↩ to send; replying reopens the thread for the agent)"></textarea>
+        <div class="btns"><button class="primary" data-act="reply">Reply</button></div></div>`}
+    </div>`;
+  return el;
+}
+
+function openForm(container, target) {
+  const existing = container.querySelector('.cform');
+  if (existing) { existing.querySelector('textarea').focus(); return; }
+  const form = document.createElement('div');
+  form.className = 'cform';
+  form.innerHTML = `<textarea placeholder="Leave a comment for the agent…"></textarea>
+    <div class="btns"><span class="hint">Saved as a draft until you submit the review · ⌘↩ to add</span>
+    <span class="err"></span><button data-act="cancel-form">Cancel</button>
+    <button class="primary" data-act="save-form">Add review comment</button></div>`;
+  form.target = target;
+  container.appendChild(form);
+  form.querySelector('textarea').focus();
+}
+
+function closeForm(form) {
+  const row = form.closest('tr.thread-row');
+  form.remove();
+  if (row && !row.querySelector('.thread')) row.remove();
+}
+
+async function onClick(e) {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const thread = btn.closest('.thread');
+  const id = thread && thread.dataset.id;
+  const file = btn.closest('.file');
+  const f = file && view.files[+file.dataset.i];
+  try {
+    if (act === 'line-comment') {
+      const row = btn.closest('tr');
+      const side = row.dataset.side;
+      openForm(threadContainer(row), {file: side === 'old' ? f.old_path : f.new_path, side, line: +row.dataset.line,
+        old_rev: view.old_rev});
+    } else if (act === 'file-comment') {
+      // File-level comments anchor to line 1 of the new file.
+      file.classList.remove('collapsed');
+      openForm($('.outside', file), {file: f.new_path, side: 'new', line: 1});
+    } else if (act === 'save-form') {
+      const form = btn.closest('.cform');
+      const body = form.querySelector('textarea').value;
+      if (!body.trim()) return;
+      await api('/api/comments', {...form.target, body});
+      closeForm(form);
+      await loadComments();
+    } else if (act === 'cancel-form') {
+      closeForm(btn.closest('.cform'));
+    } else if (act === 'reply') {
+      const ta = thread.querySelector('.reply textarea');
+      if (!ta.value.trim()) return;
+      await api(`/api/comments/${id}/reply`, {body: ta.value});
+      ta.value = '';
+      await loadComments();
+    } else if (act === 'resolve' || act === 'reopen') {
+      await api(`/api/comments/${id}/status`, {status: act === 'resolve' ? 'resolved' : 'open'});
+      unfolded.delete(id);
+      await loadComments();
+    } else if (act === 'delete') {
+      if (!confirm('Delete this draft comment?')) return;
+      await api(`/api/comments/${id}/delete`, {});
+      await loadComments();
+    } else if (act === 'edit') {
+      const c = comments.find(c => c.id === id);
+      const body = thread.querySelector('.msg:last-child .body');
+      body.innerHTML = `<textarea>${esc(c.body)}</textarea><div class="btns"><button data-act="cancel-edit">Cancel</button>
+        <button class="primary" data-act="save-edit">Save</button></div>`;
+      body.querySelector('textarea').focus();
+    } else if (act === 'save-edit') {
+      await api(`/api/comments/${id}/edit`, {body: thread.querySelector('textarea').value});
+      await loadComments();
+    } else if (act === 'cancel-edit') {
+      renderComments();
+    } else if (act === 'fold') {
+      if (thread.classList.contains('folded')) unfolded.add(id); else unfolded.delete(id);
+      thread.replaceWith(threadEl(comments.find(c => c.id === id), !thread.closest('tr.thread-row')));
+    } else if (act === 'toggle-file') {
+      file.classList.toggle('collapsed');
+      if (!file.classList.contains('collapsed')) { fillBody(+file.dataset.i); renderComments(); }
+    } else if (act === 'load-file') {
+      fillBody(+file.dataset.i);
+      renderComments();
+    } else if (act === 'viewed') {
+      if (btn.checked) { setPref(`viewed:${f.path}`, f.hash); file.classList.add('collapsed'); }
+      else { localStorage.removeItem(key(`viewed:${f.path}`)); file.classList.remove('collapsed'); fillBody(+file.dataset.i); renderComments(); }
+      renderFileList();
+    }
+  } catch (err) {
+    const target = btn.closest('.cform, .thread');
+    const errEl = target && target.querySelector('.err');
+    if (errEl) errEl.textContent = err.message; else alert(err.message);
+  }
+}
+
+function openSubmit() {
+  const drafts = comments.filter(c => c.status === 'draft').length;
+  $('#submit-info').textContent = drafts
+    ? `${drafts} draft comment${drafts === 1 ? '' : 's'} will be sent to the agent.`
+    : 'No draft comments. You can still send an overall summary.';
+  $('#submit-err').textContent = '';
+  $('#submit-dlg').showModal();
+  $('#summary').focus();
+}
+
+async function doSubmit() {
+  try {
+    await api('/api/submit', {summary: $('#summary').value});
+    $('#summary').value = '';
+    $('#submit-dlg').close();
+    await loadComments();
+    showBanner('Review submitted. Ask your agent to run /address-review.');
+  } catch (e) {
+    $('#submit-err').textContent = e.message;
+  }
+}
+
+init().catch(e => { $('#loading').innerHTML = `<span class="err">${esc(e.message)}</span>`; });
+</script>
+</body>
+</html>
