@@ -102,6 +102,24 @@ class LocalReviewTest(unittest.TestCase):
         # "Since last review" shows only what changed after submitting.
         self.assertEqual(set(self.files("since")), {"Foo.kt"})
 
+    def test_multi_line_comment_follows_its_range(self):
+        c = lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "start_line": 5, "line": 7, "body": "Inline b()"})
+        self.assertEqual(c["anchor"]["span"], 3)
+        self.assertEqual(c["anchor"]["range_text"], ["fun b() {", "    return 42 // magic", "}"])
+        with self.assertRaises(lr.UserError):
+            lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "start_line": 7, "line": 5, "body": "backwards"})
+        lr.submit_review(self.repo, "")
+
+        self.write("Foo.kt", "// header\n\n" + FOO_V2)
+        out = self.cli(lr.cmd_list, all=False, json=False)
+        self.assertIn(f"{c['id']} · open · Foo.kt:7-9", out)
+        for n, text in [(7, "fun b() {"), (8, "    return 42 // magic"), (9, "}")]:
+            self.assertIn(f"> {n} | {text}", out)
+        self.assertIn("  6 | ", out)  # context before the range isn't marked
+
+        self.write("Foo.kt", FOO_V2.replace("}\n\nfun b", "}\nfun b").replace("fun b() {\n    return 42 // magic\n}\n", "fun b() = 0\n"))
+        self.assertIn("originally lines 5-7", self.cli(lr.cmd_list, all=False, json=False))
+
     def test_watch_once(self):
         lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "x"})
         out = io.StringIO()

@@ -433,24 +433,31 @@ def locate(lines, anchor):
     return best[1]
 
 
+def span(c):
+    """Lines a comment covers, ending on its anchored line; 1 for single-line (and older) comments."""
+    return (c.get("anchor") or {}).get("span", 1)
+
+
 def annotate(repo, comments):
-    """Adds current_line/outdated to each comment by re-anchoring against current file content."""
+    """Adds current_line/current_start/outdated to each comment by re-anchoring against current file
+    content. A range follows its last line, the same way a single-line comment follows its line."""
     cache = {}
     for c in comments:
-        c["current_line"] = None
+        c["current_line"] = c["current_start"] = None
         c["outdated"] = False
         if not c.get("file"):
             continue
         if c["side"] == "old":
             c["current_line"] = c["anchor"]["line"]
-            continue
-        key = (c.get("branch"), c["file"])
-        if key not in cache:
-            cache[key] = repo.branch_file_lines(c.get("branch"), c["file"])
-        lines = cache[key]
-        found = locate(lines, c["anchor"]) if lines is not None else None
-        c["current_line"] = found
-        c["outdated"] = found is None
+        else:
+            key = (c.get("branch"), c["file"])
+            if key not in cache:
+                cache[key] = repo.branch_file_lines(c.get("branch"), c["file"])
+            lines = cache[key]
+            c["current_line"] = locate(lines, c["anchor"]) if lines is not None else None
+            c["outdated"] = c["current_line"] is None
+        if c["current_line"]:
+            c["current_start"] = max(1, c["current_line"] - span(c) + 1)
     return comments
 
 
@@ -465,6 +472,7 @@ def add_comment(repo, data):
     if path:
         side = data.get("side")
         line = int(data.get("line"))
+        start = int(data.get("start_line") or line)
         if side == "new":
             lines = repo.branch_file_lines(comment["branch"], path)
         elif side == "old":
@@ -476,10 +484,14 @@ def add_comment(repo, data):
             raise UserError("side must be 'new' or 'old'")
         if lines is None or not 1 <= line <= len(lines):
             raise UserError(f"{path}:{line} does not exist")
+        if not 1 <= start <= line:
+            raise UserError(f"start_line {start} must be between 1 and line {line}")
         i = line - 1
-        comment.update(file=path, side=side, anchor={
-            "line": line, "line_text": lines[i],
-            "before": lines[max(0, i - CONTEXT_LINES):i], "after": lines[i + 1:i + 1 + CONTEXT_LINES]})
+        anchor = {"line": line, "line_text": lines[i],
+                  "before": lines[max(0, i - CONTEXT_LINES):i], "after": lines[i + 1:i + 1 + CONTEXT_LINES]}
+        if start < line:
+            anchor.update(span=line - start + 1, range_text=lines[start - 1:line])
+        comment.update(file=path, side=side, anchor=anchor)
     with state_txn(repo, write=True) as st:
         comment["id"] = new_id(st, "c")
         st["comments"].append(comment)
@@ -770,20 +782,23 @@ def cmd_serve(repo, args):
 
 
 def excerpt(repo, c):
-    """Code around a comment, with line numbers and a marker on the commented line."""
+    """Code around a comment, with line numbers and a marker on each commented line."""
     a = c["anchor"]
+    n = span(c)
     if c["side"] == "new" and c["current_line"]:
         lines = repo.branch_file_lines(c.get("branch"), c["file"]) or []
         at = c["current_line"]
-        start = max(1, at - CONTEXT_LINES)
+        start = max(1, at - n + 1 - CONTEXT_LINES)
         numbered = [(i, lines[i - 1]) for i in range(start, min(len(lines), at + CONTEXT_LINES) + 1)]
     else:
         at = a["line"]
-        seq = a["before"] + [a["line_text"]] + a["after"]
-        first = at - len(a["before"])
+        # The stored context sits around the last line; a range carries its own text for the rest.
+        head = a["range_text"][:-1] if n > 1 else a["before"]
+        seq = head + [a["line_text"]] + a["after"]
+        first = at - len(head)
         numbered = [(first + k, s) for k, s in enumerate(seq)]
     width = len(str(numbered[-1][0])) if numbered else 1
-    return "\n".join(f"{'>' if i == at else ' '} {i:>{width}} | {s}" for i, s in numbered)
+    return "\n".join(f"{'>' if at - n < i <= at else ' '} {i:>{width}} | {s}" for i, s in numbered)
 
 
 def location(c):
@@ -791,14 +806,20 @@ def location(c):
     return prefix + _location(c)
 
 
+def lines_label(start, end):
+    return f"{start}-{end}" if start and start < end else f"{end}"
+
+
 def _location(c):
     if not c.get("file"):
         return "(general review comment)"
+    original = lines_label(c["anchor"]["line"] - span(c) + 1, c["anchor"]["line"])
     if c["side"] == "old":
-        return f"{c['file']}:{c['anchor']['line']} (deleted/old line, at {c['old_rev'][:8]})"
+        return f"{c['file']}:{original} (deleted/old line, at {c['old_rev'][:8]})"
     if c["outdated"]:
-        return f"{c['file']} (OUTDATED: originally line {c['anchor']['line']}; that line has since changed)"
-    return f"{c['file']}:{c['current_line']}"
+        what = "lines" if span(c) > 1 else "line"
+        return f"{c['file']} (OUTDATED: originally {what} {original}; that code has since changed)"
+    return f"{c['file']}:{lines_label(c['current_start'], c['current_line'])}"
 
 
 def cmd_list(repo, args):

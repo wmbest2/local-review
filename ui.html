@@ -78,6 +78,13 @@
   aside .dir .name { font-weight: 500; direction: rtl; text-align: left; }
   aside .dir.closed + .kids { display: none; }
   aside .dir.viewed { color: var(--faint); }
+  aside .tools { display: flex; gap: 2px; align-items: center; padding: 0 0 8px 8px; color: var(--faint); font-size: 12px; }
+  aside .tools .spacer { flex: 1; }
+  aside .tools button { font-size: 12px; color: var(--muted); }
+  aside a.current, aside .dir.current { background: var(--panel); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
+  body.no-files aside { display: none; }
+  body.no-files main { padding-left: 20px; }
+  #toggle-files { padding: 2px 8px; font-size: 15px; line-height: 1.2; color: var(--muted); }
   aside .cnt { font-size: 11px; background: var(--accent); color: #fff; border-radius: 10px; padding: 0 7px; line-height: 18px; }
   .st { font-family: var(--mono); font-size: 11px; width: 12px; font-weight: 600; color: var(--warn); }
   .st.added { color: var(--add-sign); } .st.deleted { color: var(--del-sign); } .st.modified { color: var(--muted); }
@@ -115,6 +122,11 @@
           display: none; z-index: 2; }
   tr.ln:hover .addc { display: block; }
   tr.ln:hover td.code { box-shadow: inset 2px 0 0 var(--accent); }
+  /* Lines in a range being commented on (dragging, an open form, or a hovered range thread). The
+     overlay is an image so it tints the add/del colour underneath instead of replacing it. */
+  tr.ln.sel td { background-image: linear-gradient(rgba(84, 174, 255, .18), rgba(84, 174, 255, .18)); }
+  tr.ln.sel td.code { box-shadow: inset 3px 0 0 var(--accent); }
+  body.dragging, body.dragging * { cursor: ns-resize !important; user-select: none; }
   tr.thread-row > td { padding: 10px 16px; background: var(--panel); border-top: 1px solid var(--divider);
                        border-bottom: 1px solid var(--divider); font-family: var(--sans); font-size: 14px; }
   .thread { border: 1px solid var(--border); border-radius: 8px; margin: 4px 0 10px; max-width: 860px; background: var(--bg); }
@@ -157,6 +169,7 @@
 </head>
 <body>
 <header>
+  <button id="toggle-files" title="Show or hide the file tree (f)">☰</button>
   <h1 id="title">local-review</h1>
   <label>View
     <select id="mode">
@@ -283,12 +296,25 @@ async function init() {
   $('#submit-go').onclick = doSubmit;
   $('#add-general').onclick = () => openForm($('#general-threads'), {file: null});
   document.addEventListener('click', onClick);
+  document.addEventListener('mousedown', onLineMouseDown);
+  document.addEventListener('mouseover', onLineMouseOver);
+  document.addEventListener('mouseup', onLineMouseUp);
+  document.addEventListener('mouseover', onThreadHover);
+  document.body.classList.toggle('no-files', pref('files', '1') === '0');
+  $('#toggle-files').onclick = toggleFiles;
+  let ticking = false;
+  window.addEventListener('scroll', () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => { ticking = false; markCurrentFile(); });
+  }, {passive: true});
   document.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.tagName === 'TEXTAREA') {
       const btn = e.target.parentElement.querySelector('button.primary');
       if (btn) { e.preventDefault(); btn.click(); }
-    } else if (e.key === 'r' && !['TEXTAREA', 'INPUT', 'SELECT'].includes(e.target.tagName) && !e.metaKey && !e.ctrlKey) {
-      loadDiff();
+    } else if (!['TEXTAREA', 'INPUT', 'SELECT'].includes(e.target.tagName) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === 'r') loadDiff();
+      else if (e.key === 'f') toggleFiles();
     }
   });
   await loadComments();
@@ -506,7 +532,40 @@ function isViewed(f) { return pref(`viewed:${f.path}`, '') === f.hash; }
 function renderFileList() {
   const counts = {};
   for (const c of comments) if (c.file && ['draft', 'open', 'replied', 'addressed'].includes(c.status)) counts[c.file] = (counts[c.file] || 0) + 1;
-  $('#files').innerHTML = treeHtml(fileTree(view.files), 0, counts).html;
+  const tree = fileTree(view.files);
+  const hasDirs = tree.kids.some(k => k.kids);
+  $('#files').innerHTML = (hasDirs ? `<div class="tools">Files<span class="spacer"></span>
+      <button class="link" data-act="collapse-all" title="Collapse every folder">Collapse all</button>
+      <button class="link" data-act="expand-all" title="Expand every folder">Expand all</button></div>` : '') +
+    treeHtml(tree, 0, counts).html;
+  markCurrentFile();
+}
+
+function toggleFiles() {
+  const hidden = document.body.classList.toggle('no-files');
+  setPref('files', hidden ? '0' : '1');
+}
+
+// Highlights the file whose header is at the top of the page, or the collapsed folder hiding it,
+// and keeps that row in view in the sidebar.
+function markCurrentFile() {
+  if (!view) return;
+  const sections = $$('#diff > .file');
+  let cur = sections[0];
+  for (const sec of sections) {
+    if (sec.getBoundingClientRect().top <= 60) cur = sec; else break;
+  }
+  $$('#files .current').forEach(el => el.classList.remove('current'));
+  if (!cur) return;
+  let target = $(`#files a[href="#f${cur.dataset.i}"]`);
+  if (!target) return;
+  for (let k = target.closest('.kids'); k; k = k.parentElement.closest('.kids')) {
+    if (k.previousElementSibling.classList.contains('closed')) target = k.previousElementSibling;
+  }
+  target.classList.add('current');
+  const aside = $('#files'), top = target.offsetTop - aside.offsetTop, bottom = top + target.offsetHeight;
+  if (top < aside.scrollTop) aside.scrollTop = top - 8;
+  else if (bottom > aside.scrollTop + aside.clientHeight) aside.scrollTop = bottom - aside.clientHeight + 8;
 }
 
 // Folders keep the order git lists the files in. A folder whose only child is another folder is
@@ -600,6 +659,7 @@ function renderComments() {
   $('#submit').textContent = drafts ? `Submit review (${drafts})` : 'Submit review';
   $('#mode option[value=since]').disabled = !reviews.length;
   renderFileList();
+  paintSelections();
 }
 
 function threadContainer(row) {
@@ -613,10 +673,14 @@ function threadContainer(row) {
   return next.firstElementChild;
 }
 
+// "12" or "10–12" for a range.
+function linesLabel(start, end) { return start && start < end ? `${start}–${end}` : `${end}`; }
+
 function locLabel(c) {
   if (!c.file) return '';
-  if (c.outdated) return `${c.file} · originally line ${c.anchor.line}`;
-  return `${c.file}:${c.current_line}${c.side === 'old' ? ' (old)' : ''}`;
+  const span = c.anchor.span || 1;
+  if (c.outdated) return `${c.file} · originally line${span > 1 ? 's' : ''} ${linesLabel(c.anchor.line - span + 1, c.anchor.line)}`;
+  return `${c.file}:${linesLabel(c.current_start, c.current_line)}${c.side === 'old' ? ' (old)' : ''}`;
 }
 
 function threadEl(c, showLoc) {
@@ -629,14 +693,18 @@ function threadEl(c, showLoc) {
     : c.status === 'resolved' ? `<button class="link" data-act="reopen">Reopen</button>`
     : `<button class="link" data-act="resolve">Resolve</button>`;
   const msgs = [{author: c.author, body: c.body, at: c.submitted_at || c.created_at}, ...c.replies];
-  const ctx = c.file && (showLoc || c.outdated) && c.anchor
-    ? `<pre class="ctx">${esc([...c.anchor.before, c.anchor.line_text, ...c.anchor.after].join('\n'))}</pre>` : '';
+  const a = c.anchor;
+  const ctx = c.file && (showLoc || c.outdated) && a
+    ? `<pre class="ctx">${esc([...(a.range_text ? a.range_text.slice(0, -1) : a.before), a.line_text, ...a.after].join('\n'))}</pre>` : '';
+  // Inline threads sit under the last line, so say when they cover more than that one.
+  const ranged = !showLoc && !c.outdated && c.current_start && c.current_start < c.current_line
+    ? `Lines ${linesLabel(c.current_start, c.current_line)}` : '';
   el.innerHTML = `
     <div class="thead">
       <button class="link" data-act="fold" title="Fold">${folded ? '▸' : '▾'}</button>
       <span class="badge ${c.status}">${c.status === 'replied' ? 'agent replied' : c.status}</span>
       ${c.outdated ? '<span class="badge outdated">outdated</span>' : ''}
-      <span class="loc">${showLoc || c.outdated ? esc(locLabel(c)) : ''}${folded ? ` ${esc(c.body.slice(0, 80))}` : ''}</span>
+      <span class="loc">${showLoc || c.outdated ? esc(locLabel(c)) : ranged}${folded ? ` ${esc(c.body.slice(0, 80))}` : ''}</span>
       <span class="id">${c.id}</span>${actions}
     </div>
     <div class="tbody">
@@ -655,7 +723,8 @@ function openForm(container, target) {
   if (existing) { existing.querySelector('textarea').focus(); return; }
   const form = document.createElement('div');
   form.className = 'cform';
-  form.innerHTML = `<textarea placeholder="Leave a comment for the agent…"></textarea>
+  const range = target.start_line ? `<div class="hint">Lines ${target.start_line}–${target.line}${target.side === 'old' ? ' (old)' : ''}</div>` : '';
+  form.innerHTML = `${range}<textarea placeholder="Leave a comment for the agent…"></textarea>
     <div class="btns"><span class="hint">Saved as a draft until you submit the review · ⌘↩ to add</span>
     <span class="err"></span><button data-act="cancel-form">Cancel</button>
     <button class="primary" data-act="save-form">Add review comment</button></div>`;
@@ -668,6 +737,87 @@ function closeForm(form) {
   const row = form.closest('tr.thread-row');
   form.remove();
   if (row && !row.querySelector('.thread')) row.remove();
+  paintSelections();
+}
+
+// ---------------------------------------------------------------------------- multi-line ranges
+
+// Drag from one line's + to another, or click a + and then shift-click another, to comment on the
+// lines between them. A range stays on the side (old or new) it started on, like GitHub.
+let drag = null, lastLine = null;
+
+// A row's line number on one side, or 0 when the row has no line there (an add row on the old side).
+function lineOn(row, side) { return +(side === 'old' ? row.dataset.o : row.dataset.n) || 0; }
+
+function rangeRows(i, side, start, end) {
+  return $$(`#f${i} tr.ln`).filter(r => { const n = lineOn(r, side); return n >= start && n <= end; });
+}
+
+function paintRange(i, side, start, end) {
+  rangeRows(i, side, start, end).forEach(r => r.classList.add('sel'));
+}
+
+// Forms keep their range lit until they close, so you can see what the comment is about.
+function paintSelections() {
+  $$('tr.ln.sel').forEach(r => r.classList.remove('sel'));
+  for (const form of $$('#diff .cform')) {
+    const t = form.target, sec = form.closest('.file');
+    if (t && t.start_line && sec) paintRange(+sec.dataset.i, t.side, t.start_line, t.line);
+  }
+  if (drag) paintRange(drag.i, drag.side, Math.min(drag.start, drag.end), Math.max(drag.start, drag.end));
+}
+
+function onLineMouseDown(e) {
+  const btn = e.target.closest('.addc');
+  if (!btn || e.button !== 0) return;
+  e.preventDefault();
+  const row = btn.closest('tr'), sec = row.closest('.file');
+  const i = +sec.dataset.i, side = row.dataset.side, line = lineOn(row, side);
+  const extend = e.shiftKey && lastLine && lastLine.i === i && lastLine.side === side;
+  drag = {i, side, start: extend ? lastLine.line : line, end: line};
+  document.body.classList.add('dragging');
+  paintSelections();
+}
+
+function onLineMouseOver(e) {
+  if (!drag) return;
+  const row = e.target.closest('tr.ln');
+  if (!row || +row.closest('.file').dataset.i !== drag.i) return;
+  const n = lineOn(row, drag.side);
+  if (n && n !== drag.end) { drag.end = n; paintSelections(); }
+}
+
+function onLineMouseUp() {
+  if (!drag) return;
+  const {i, side, start, end} = drag;
+  drag = null;
+  document.body.classList.remove('dragging');
+  openLineForm(i, side, Math.min(start, end), Math.max(start, end));
+}
+
+// The form (and later the thread) sits under the range's last line, where the comment anchors.
+function openLineForm(i, side, start, end) {
+  const f = view.files[i];
+  const row = rangeRows(i, side, end, end).find(r => r.dataset.side === side) || rangeRows(i, side, end, end)[0];
+  if (!row) return;
+  // Re-picking a range replaces a form that hasn't been typed in yet, so shift-click can extend it.
+  for (const form of $$(`#f${i} .cform`)) if (!form.querySelector('textarea').value.trim()) closeForm(form);
+  lastLine = {i, side, line: end};
+  openForm(threadContainer(row), {file: side === 'old' ? f.old_path : f.new_path, side, line: end,
+    ...(start < end ? {start_line: start} : {}), old_rev: view.old_rev});
+  paintSelections();
+}
+
+// Hovering a range comment lights up the lines it covers.
+function onThreadHover(e) {
+  if (drag) return;
+  const thread = e.target.closest('tr.thread-row .thread');
+  const c = thread && comments.find(c => c.id === thread.dataset.id);
+  const key = c && c.current_start && c.current_start < c.current_line ? c.id : null;
+  if (key === onThreadHover.shown) return;
+  onThreadHover.shown = key;
+  paintSelections();
+  if (key) paintRange(+thread.closest('.file').dataset.i, c.side, c.current_start, c.current_line);
 }
 
 async function onClick(e) {
@@ -679,7 +829,12 @@ async function onClick(e) {
   const file = btn.closest('.file');
   const f = file && view.files[+file.dataset.i];
   try {
-    if (act === 'toggle-dir') {
+    if (act === 'collapse-all' || act === 'expand-all') {
+      for (const d of $$('#files .dir')) {
+        if (act === 'collapse-all') setPref(`dir:${d.dataset.dir}`, '1'); else localStorage.removeItem(key(`dir:${d.dataset.dir}`));
+      }
+      renderFileList();
+    } else if (act === 'toggle-dir') {
       const dir = `dir:${btn.dataset.dir}`;
       if (btn.classList.contains('closed')) localStorage.removeItem(key(dir)); else setPref(dir, '1');
       renderFileList();
@@ -687,10 +842,10 @@ async function onClick(e) {
       wsOverride.set(f.path, !ignoresWs(f));
       await refetchFile(+file.dataset.i);
     } else if (act === 'line-comment') {
+      // A mouse press already opened the form (see onLineMouseUp); this path is for the keyboard.
+      if (e.detail) return;
       const row = btn.closest('tr');
-      const side = row.dataset.side;
-      openForm(threadContainer(row), {file: side === 'old' ? f.old_path : f.new_path, side, line: +row.dataset.line,
-        old_rev: view.old_rev});
+      openLineForm(+file.dataset.i, row.dataset.side, +row.dataset.line, +row.dataset.line);
     } else if (act === 'file-comment') {
       // File-level comments anchor to line 1 of the new file.
       file.classList.remove('collapsed');
