@@ -65,7 +65,7 @@ local-review clean --all      # discard this worktree's whole review (refuses wi
 Snapshots that no worktree refers to anymore (e.g. the worktree was deleted) are pruned automatically each time `local-review` starts, once they're over an hour old. `clean` prunes them too. `state.json` and `archive.json` live in the worktree's git dir, so `git worktree remove` deletes them.
 
 ## Watching
-`local-review watch` prints one line each time a review is submitted. `--once` exits after the first submission. An agent can run `watch --once` in the background, address the review when it exits, then start it again.
+`local-review watch` prints one line each time a review is submitted or you reply in a thread (replies post immediately, without Submit). `--once` exits after the first event. An agent can run `watch --once` in the background, address the review when it exits, then start it again.
 
 ## Hook (optional)
 `local-review status --hook` prints a one-line reminder only when comments are open, and prints nothing outside a git repo. It's suitable for a Claude Code `UserPromptSubmit` hook.

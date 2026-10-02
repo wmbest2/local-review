@@ -840,9 +840,20 @@ def cmd_status(repo, args):
     print(" ".join(f"{k}={counts.get(k, 0)}" for k in ("draft", "open", "replied", "addressed", "resolved")))
 
 
+def reviewer_replies(st):
+    """(comment id, reply index) for every reply the reviewer has left on a submitted thread."""
+    return {(c["id"], i) for c in st["comments"] for i, r in enumerate(c["replies"]) if r["author"] == REVIEWER}
+
+
 def cmd_watch(repo, args):
-    """Prints one line per newly submitted review; with --once, exits after the first."""
-    seen = {r["id"] for r in load_state(repo)["reviews"]}
+    """Prints one line per newly submitted review or reviewer reply; with --once, exits after the first.
+
+    Replies count as well as submissions: answering the agent in a thread posts immediately, with no
+    Submit, and it is just as much the agent's turn as a fresh review.
+    """
+    st = load_state(repo)
+    seen = {r["id"] for r in st["reviews"]}
+    seen_replies = reviewer_replies(st)
     last = state_version(repo)
     while True:
         time.sleep(args.interval)
@@ -850,14 +861,19 @@ def cmd_watch(repo, args):
         if v == last:
             continue
         last = v
-        for r in load_state(repo)["reviews"]:
-            if r["id"] in seen:
-                continue
-            seen.add(r["id"])
-            print(f"local-review: review {r['id']} submitted with {r['comment_count']} comment(s) in {repo.root}. "
-                  f"Run `local-review list`.", flush=True)
-            if args.once:
-                return
+        st = load_state(repo)
+        events = []
+        for r in st["reviews"]:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                events.append(f"review {r['id']} submitted with {r['comment_count']} comment(s)")
+        for cid in sorted({cid for cid, _ in reviewer_replies(st) - seen_replies}):
+            events.append(f"reviewer replied on {cid}")
+        seen_replies = reviewer_replies(st)
+        for event in events:
+            print(f"local-review: {event} in {repo.root}. Run `local-review list`.", flush=True)
+        if events and args.once:
+            return
 
 
 def main():

@@ -24,7 +24,7 @@ The user reviews your changes in the `local-review` browser UI and submits line 
 
 ## Watching for submissions
 
-If the user asks you to watch for reviews, run `local-review watch --once` in the background (Bash with `run_in_background`) from the reviewed worktree. It exits when a review is submitted. When it exits, follow the steps above, then start it again so the next review is picked up too. Stop re-arming when the user says to.
+If the user asks you to watch for reviews, run `local-review watch --once` in the background (Bash with `run_in_background`) from the reviewed worktree. It exits when a review is submitted or the reviewer replies in a thread. When it exits, follow the steps above, then start it again so the next review is picked up too. Stop re-arming when the user says to.
 
 ## Cleaning up
 
