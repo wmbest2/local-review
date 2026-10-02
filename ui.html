@@ -542,16 +542,21 @@ function renderFileList() {
   markCurrentFile();
 }
 
-// Picking a file in the tree opens it even if it's marked viewed (it stays marked) and puts its
-// header at the top of the page.
+// Picking a file in the tree opens it, clearing its viewed mark as if you'd unchecked the box, and
+// puts its header at the top of the page.
 function revealFile(i) {
   const sec = $(`#f${i}`);
   if (!sec) return;
+  const f = view.files[i];
+  if (isViewed(f)) {
+    localStorage.removeItem(key(`viewed:${f.path}`));
+    $('[data-act=viewed]', sec).checked = false;
+  }
   if (sec.classList.contains('collapsed')) {
     sec.classList.remove('collapsed');
-    if (view.files[i].additions + view.files[i].deletions <= LARGE) fillBody(i);
-    renderComments();
+    if (f.additions + f.deletions <= LARGE) fillBody(i);
   }
+  renderComments();
   history.replaceState(null, '', `#f${i}`);
   sec.scrollIntoView({block: 'start'});
 }
