@@ -95,7 +95,8 @@
   .panel > h2 { margin: 0; padding: 10px 16px; font-size: 13px; font-weight: 600; background: var(--panel);
                 border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0; }
   .panel > .inner { padding: 12px 16px; }
-  .file { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: clip; }
+  /* Anchor jumps land below the sticky header instead of under it. */
+  .file { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: clip; scroll-margin-top: 64px; }
   .fhead { position: sticky; top: 52px; z-index: 5; display: flex; gap: 12px; align-items: center; padding: 8px 12px;
            background: var(--panel); border-bottom: 1px solid var(--border); }
   .fhead .path { font-family: var(--mono); font-size: 12.5px; flex: 1; overflow-wrap: anywhere; font-weight: 500; }
@@ -541,6 +542,20 @@ function renderFileList() {
   markCurrentFile();
 }
 
+// Picking a file in the tree opens it even if it's marked viewed (it stays marked) and puts its
+// header at the top of the page.
+function revealFile(i) {
+  const sec = $(`#f${i}`);
+  if (!sec) return;
+  if (sec.classList.contains('collapsed')) {
+    sec.classList.remove('collapsed');
+    if (view.files[i].additions + view.files[i].deletions <= LARGE) fillBody(i);
+    renderComments();
+  }
+  history.replaceState(null, '', `#f${i}`);
+  sec.scrollIntoView({block: 'start'});
+}
+
 function toggleFiles() {
   const hidden = document.body.classList.toggle('no-files');
   setPref('files', hidden ? '0' : '1');
@@ -553,7 +568,8 @@ function markCurrentFile() {
   const sections = $$('#diff > .file');
   let cur = sections[0];
   for (const sec of sections) {
-    if (sec.getBoundingClientRect().top <= 60) cur = sec; else break;
+    // Just past the scroll-margin-top a tree jump leaves above a file.
+    if (sec.getBoundingClientRect().top <= 72) cur = sec; else break;
   }
   $$('#files .current').forEach(el => el.classList.remove('current'));
   if (!cur) return;
@@ -821,6 +837,8 @@ function onThreadHover(e) {
 }
 
 async function onClick(e) {
+  const link = e.target.closest('#files a[href^="#f"]');
+  if (link && !e.metaKey && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); revealFile(+link.getAttribute('href').slice(2)); return; }
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
   const act = btn.dataset.act;
