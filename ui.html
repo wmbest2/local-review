@@ -34,9 +34,16 @@
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.6 var(--sans); background: var(--bg); color: var(--fg);
          -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
-  header { position: sticky; top: 0; z-index: 10; display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  /* One line, always: the sidebar and file headers stick at top: 52px, so a wrapped second row would
+     spill over them. Long items (title, stack branch) shrink and ellipsize instead. */
+  header { position: sticky; top: 0; z-index: 10; display: flex; gap: 14px; align-items: center; flex-wrap: nowrap;
            height: 52px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  header h1 { font-size: 15px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: -.01em; }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: -.01em;
+              min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header > * { flex-shrink: 0; }
+  header > h1, header > #stack-wrap { flex-shrink: 1; }
+  #stack-wrap { min-width: 0; }
+  #stack-branch { min-width: 140px; max-width: 420px; width: 100%; text-overflow: ellipsis; }
   header .spacer { flex: 1; }
   header label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
   select, input[type=text], textarea, button { font: inherit; color: var(--fg); background: var(--bg);
@@ -238,13 +245,14 @@ async function init() {
   $('#title').textContent = `${meta.name} · ${meta.branch}`;
   if (meta.stack) {
     $('#mode option[value=stack]').hidden = false;
-    // "N. title", with the checked-out branch marked: its view includes uncommitted edits.
+    // "N. title", with ● on the checked-out branch: its view includes uncommitted edits.
     $('#stack-branch').innerHTML = meta.stack.map((p, i) =>
-      `<option value="${esc(p.branch)}">${i + 1}. ${esc(p.title || p.branch)}${p.branch === meta.branch ? ' (checked out)' : ''}</option>`).join('');
+      `<option value="${esc(p.branch)}" title="${esc(p.branch)}">${p.branch === meta.branch ? '● ' : ''}${i + 1}. ${esc(p.title || p.branch)}</option>`).join('');
     const onStack = meta.stack.some(p => p.branch === meta.branch);
     const saved = pref('stackBranch', '');
     $('#stack-branch').value = meta.stack.some(p => p.branch === saved) ? saved : (onStack ? meta.branch : meta.stack[0].branch);
     $('#stack-branch').onchange = () => { setPref('stackBranch', $('#stack-branch').value); loadDiff(); };
+    $('#stack-branch').title = 'Branch under review (● = checked out, includes uncommitted edits)';
   }
   $('#mode').value = pref('mode', meta.mode);
   if (!meta.stack && $('#mode').value === 'stack') $('#mode').value = 'branch';
@@ -281,7 +289,9 @@ async function loadDiff() {
   $('#mode option[value=since]').disabled = !reviews.length;
   const q = new URLSearchParams({mode, base: $('#base').value.trim(), context: $('#context').value});
   if (mode === 'stack') q.set('branch', $('#stack-branch').value);
-  $('#title').textContent = `${meta.name} · ${mode === 'stack' ? $('#stack-branch').value : meta.branch}`;
+  const shown = mode === 'stack' ? $('#stack-branch').value : meta.branch;
+  $('#title').textContent = `${meta.name} · ${shown}`;
+  $('#title').title = `${meta.name} · ${shown}`;
   $('#loading').hidden = false;
   $('#loading').textContent = 'Loading…';
   try {
