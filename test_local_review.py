@@ -185,5 +185,67 @@ class LocalReviewTest(unittest.TestCase):
             httpd.server_close()
 
 
+class StackTest(unittest.TestCase):
+    """A two-branch stack on main: s1 adds a line to Foo.kt, s2 (checked out) changes that line."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="lr-stack-")
+        d = self.dir
+        sh(d, "git", "init", "-q", "-b", "main")
+        sh(d, "git", "config", "user.email", "t@t")
+        sh(d, "git", "config", "user.name", "t")
+        self.write("Foo.kt", FOO_V1)
+        sh(d, "git", "add", "-A")
+        sh(d, "git", "commit", "-qm", "base")
+        sh(d, "git", "checkout", "-qb", "s1")
+        self.write("Foo.kt", FOO_V1 + "\nfun c() = 3\n")
+        sh(d, "git", "commit", "-qam", "s1")
+        sh(d, "git", "checkout", "-qb", "s2")
+        self.write("Foo.kt", FOO_V1 + "\nfun c() = 30 // s2\n")
+        sh(d, "git", "commit", "-qam", "s2")
+        self.write("stack.conf", "trunk = main   # inline comments are ignored\n"
+                                 "A | s1 | First change\nB | s2 | Second change\n")
+        self.repo = lr.Repo(d)
+        self.stack = lr.load_stack(self.repo)
+
+    def write(self, name, text):
+        with open(os.path.join(self.dir, name), "w") as f:
+            f.write(text)
+
+    def diff(self, branch):
+        return {f["path"]: f for f in lr.compute_diff(self.repo, "stack", "main", 3, branch, self.stack)["files"]}
+
+    def test_parents_chain_from_trunk(self):
+        self.assertEqual(self.stack["trunk"], "main")
+        self.assertEqual([(p["branch"], p["parent"], p["tier"]) for p in self.stack["phases"]],
+                         [("s1", "main", "A"), ("s2", "s1", "B")])
+
+    def test_each_branch_diffs_against_the_one_below(self):
+        s1 = self.diff("s1")
+        self.assertEqual(list(s1), ["Foo.kt"], "s1 is not checked out, so stack.conf is not in its view")
+        added = [ln["s"] for h in s1["Foo.kt"]["hunks"] for ln in h["lines"] if ln["t"] == "add"]
+        self.assertIn("fun c() = 3", added)
+
+        # s2 is checked out: its view is the working tree, so the uncommitted stack.conf shows here.
+        s2 = self.diff("s2")
+        changed = [ln["s"] for h in s2["Foo.kt"]["hunks"] for ln in h["lines"] if ln["t"] in ("add", "del")]
+        self.assertEqual(changed, ["fun c() = 3", "fun c() = 30 // s2"])
+        self.assertIn("stack.conf", s2)
+
+    def test_comment_on_another_branch_anchors_to_that_branch(self):
+        c = lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 9, "branch": "s1", "body": "why 3?"})
+        self.assertEqual(c["anchor"]["line_text"], "fun c() = 3")
+        # The working tree (s2) rewrote that line, but the comment belongs to s1 and still lines up.
+        with lr.state_txn(self.repo) as st:
+            [annotated] = lr.annotate(self.repo, st["comments"])
+        self.assertEqual(annotated["current_line"], 9)
+        self.assertFalse(annotated["outdated"])
+        self.assertEqual(lr.location(annotated), "[s1] Foo.kt:9")
+
+    def test_unknown_branch_is_a_user_error(self):
+        with self.assertRaises(lr.UserError):
+            lr.compute_diff(self.repo, "stack", "main", 3, "nope", self.stack)
+
+
 if __name__ == "__main__":
     unittest.main()
