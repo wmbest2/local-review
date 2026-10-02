@@ -41,6 +41,16 @@ Pick the branch from the **Branch** menu. The checked-out branch is reviewed wit
 
 **Hide whitespace** (header) diffs with `git diff -w`, so re-indents don't bury the real change; each file's header also has its own **Hide/Show whitespace** button that overrides it for that file. Line numbers don't change, so comments stay anchored.
 
+### Code vs. tests
+Files are split into **Code** and **Tests**: code first, then tests, each under its own heading, with the header totals and the sidebar split the same way. The sidebar's **All / Code / Tests** filter narrows both the tree and the diff. `local-review list` marks comments on test files with `· test`.
+
+Tests are guessed from the path: test folders (`test/`, `tests/`, `__tests__/`, `spec/`, and Gradle/Android source sets such as `src/test`, `src/androidTest`, `src/sharedTest`, `src/testProdDebug`) or test file names (`FooTest.kt`, `FooTests.swift`, `test_foo.py`, `foo_test.go`, `foo.spec.ts`, ...). Override per repo with git config. Each value is one or more globs, matched against the whole path, or against the file name when the glob has no `/`; `notTests` wins:
+
+```sh
+git config --add local-review.tests '*PreviewData.kt'
+git config --add local-review.notTests 'app/src/testing/RealThing.kt'
+```
+
 ### Review flow
 1. Hover a line and click **+** to write a comment. Comments stay **drafts** (invisible to the agent) until you click **Submit review**. You can include an overall summary.
 2. The agent runs `local-review list`, makes changes, and runs `local-review reply <id> [--addressed] -m "..."`.

@@ -85,6 +85,23 @@
   body.no-files aside { display: none; }
   body.no-files main { padding-left: 20px; }
   #toggle-files { padding: 2px 8px; font-size: 15px; line-height: 1.2; color: var(--muted); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; padding: 1px 8px; font-size: 12px; background: var(--bg); color: var(--muted); }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button.on { background: var(--panel); color: var(--fg); font-weight: 600; }
+  aside .kind-filter { padding: 0 0 8px 8px; }
+  aside .group { display: flex; gap: 6px; align-items: baseline; padding: 10px 8px 2px; font-size: 11px; font-weight: 600;
+                 letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  aside .group:first-of-type { padding-top: 0; }
+  .group .adds, .group .dels { font-size: 11px; text-transform: none; letter-spacing: 0; }
+  .group-head { display: flex; gap: 8px; align-items: baseline; margin: 28px 0 10px; font-size: 13px; font-weight: 600;
+                color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .group-head:first-child { margin-top: 0; }
+  .group-head .n { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .tag { font-size: 10.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; border-radius: 4px; padding: 0 5px;
+         line-height: 16px; color: var(--draft); border: 1px solid var(--draft); }
+  .filtered { display: none !important; }
+  #totals .split { color: var(--faint); }
   aside .cnt { font-size: 11px; background: var(--accent); color: #fff; border-radius: 10px; padding: 0 7px; line-height: 18px; }
   .st { font-family: var(--mono); font-size: 11px; width: 12px; font-weight: 600; color: var(--warn); }
   .st.added { color: var(--add-sign); } .st.deleted { color: var(--del-sign); } .st.modified { color: var(--muted); }
@@ -336,6 +353,7 @@ async function loadDiff() {
   $('#loading').textContent = 'Loading…';
   try {
     view = await api(`/api/diff?${q}`);
+    view.files = [...view.files.filter(f => !f.test), ...view.files.filter(f => f.test)];
   } catch (e) {
     $('#loading').innerHTML = `<span class="err">${esc(e.message)}</span>`;
     $('#content').hidden = true;
@@ -458,21 +476,61 @@ function renderDiff() {
   $('#viewmeta').innerHTML = `${esc(view.label)} · ${files.length} file${files.length === 1 ? '' : 's'}` +
     (view.mode === 'branch' ? ` · <details><summary style="display:inline;cursor:pointer">${c} commit${c === 1 ? '' : 's'}</summary>` +
       `<pre class="ctx">${esc(view.commits.join('\n') || '(no commits; uncommitted changes only)')}</pre></details>` : '');
-  $('#diff').innerHTML = files.length ? files.map(fileHtml).join('') : '<div class="note">No changes in this view.</div>';
+  const split = hasBothKinds();
+  $('#diff').innerHTML = files.length
+    ? files.map((f, i) => (split && (i === 0 || f.test !== files[i - 1].test)
+        ? `<div class="group-head" data-kind="${kindOf(f)}"></div>` : '') + fileHtml(f, i)).join('')
+    : '<div class="note">No changes in this view.</div>';
   files.forEach((f, i) => {
     if (isViewed(f)) $(`#f${i}`).classList.add('collapsed');
     else if (f.additions + f.deletions <= LARGE) fillBody(i);
   });
+  applyKindFilter();
+}
+
+// ------------------------------------------------------------------------------ code vs. tests
+
+// The server guesses which files are tests from their paths (see test_classifier); this splits the
+// page, the totals and the tree into code and tests, and filters to one or the other.
+const KIND_LABEL = {code: 'Code', tests: 'Tests'};
+function kindOf(f) { return f.test ? 'tests' : 'code'; }
+function hasBothKinds() { return view.files.some(f => f.test) && view.files.some(f => !f.test); }
+// 'all', 'code' or 'tests'; only applies when the view has both.
+function kindFilter() { return hasBothKinds() ? pref('kind', 'all') : 'all'; }
+function shownByFilter(f) { const k = kindFilter(); return k === 'all' || k === kindOf(f); }
+
+function sumLines(files) {
+  return files.reduce((t, f) => ({adds: t.adds + f.additions, dels: t.dels + f.deletions}), {adds: 0, dels: 0});
+}
+
+function linesHtml({adds, dels}) {
+  return `<span class="adds">+${adds.toLocaleString()}</span><span class="dels">−${dels.toLocaleString()}</span>`;
+}
+
+function filesLabel(n) { return `${n} file${n === 1 ? '' : 's'}`; }
+
+function applyKindFilter() {
+  view.files.forEach((f, i) => $(`#f${i}`).classList.toggle('filtered', !shownByFilter(f)));
+  const k = kindFilter();
+  for (const head of $$('#diff .group-head')) {
+    const files = view.files.filter(f => kindOf(f) === head.dataset.kind);
+    head.innerHTML = `${KIND_LABEL[head.dataset.kind]}<span class="n">${filesLabel(files.length)}</span>${linesHtml(sumLines(files))}`;
+    head.classList.toggle('filtered', k !== 'all');
+  }
   renderTotals();
   renderFileList();
 }
 
-// Sums the files on the page, so it follows the view, the whitespace toggles and per-file overrides.
+// Sums the files on the page, so it follows the view, the filter, the whitespace toggles and
+// per-file overrides. With both kinds showing it also says how much of that is tests.
 function renderTotals() {
-  const files = view.files;
-  const adds = files.reduce((n, f) => n + f.additions, 0), dels = files.reduce((n, f) => n + f.deletions, 0);
-  $('#totals').innerHTML = files.length ? `${files.length} file${files.length === 1 ? '' : 's'}` +
-    `<span class="adds">+${adds.toLocaleString()}</span><span class="dels">−${dels.toLocaleString()}</span>` : '';
+  const files = view.files.filter(shownByFilter);
+  if (!files.length) { $('#totals').innerHTML = ''; return; }
+  const tests = files.filter(f => f.test), code = files.filter(f => !f.test);
+  const split = tests.length && code.length
+    ? `<span class="split">(code</span>${linesHtml(sumLines(code))}<span class="split">· tests</span>${linesHtml(sumLines(tests))}<span class="split">)</span>`
+    : '';
+  $('#totals').innerHTML = `${filesLabel(files.length)}${linesHtml(sumLines(files))}${split}`;
 }
 
 function fileHtml(f, i) {
@@ -481,6 +539,7 @@ function fileHtml(f, i) {
     <div class="fhead">
       <button class="toggle" data-act="toggle-file" title="Collapse">▾</button>
       <span class="st ${f.status}">${f.status[0].toUpperCase()}</span>
+      ${f.test ? '<span class="tag" title="Guessed from the path; override with git config local-review.tests / local-review.notTests">test</span>' : ''}
       <span class="path">${path}</span>
       <span class="adds">+${f.additions}</span><span class="dels">−${f.deletions}</span>
       <button class="link" data-act="toggle-ws" title="Only for this file; the header checkbox sets the default">${ignoresWs(f) ? 'Show whitespace' : 'Hide whitespace'}</button>
@@ -533,12 +592,25 @@ function isViewed(f) { return pref(`viewed:${f.path}`, '') === f.hash; }
 function renderFileList() {
   const counts = {};
   for (const c of comments) if (c.file && ['draft', 'open', 'replied', 'addressed'].includes(c.status)) counts[c.file] = (counts[c.file] || 0) + 1;
-  const tree = fileTree(view.files);
-  const hasDirs = tree.kids.some(k => k.kids);
+  const entries = view.files.map((f, i) => ({f, i})).filter(e => shownByFilter(e.f));
+  // With code and tests both showing, each gets its own tree under a heading.
+  const groups = kindFilter() === 'all' && hasBothKinds()
+    ? ['code', 'tests'].map(k => ({kind: k, entries: entries.filter(e => kindOf(e.f) === k)}))
+    : [{kind: null, entries}];
+  const trees = groups.map(g => ({...g, tree: fileTree(g.entries, g.kind || kindFilter())}));
+  const hasDirs = trees.some(t => t.tree.kids.some(k => k.kids));
+  const k = kindFilter();
+  const filter = hasBothKinds() ? `<div class="kind-filter"><div class="seg" role="group" aria-label="Show">` +
+    ['all', 'code', 'tests'].map(x => {
+      const n = x === 'all' ? view.files.length : view.files.filter(f => kindOf(f) === x).length;
+      return `<button data-act="kind" data-kind="${x}" class="${x === k ? 'on' : ''}">${x === 'all' ? 'All' : KIND_LABEL[x]} ${n}</button>`;
+    }).join('') + '</div></div>' : '';
   $('#files').innerHTML = (hasDirs ? `<div class="tools">Files<span class="spacer"></span>
       <button class="link" data-act="collapse-all" title="Collapse every folder">Collapse all</button>
       <button class="link" data-act="expand-all" title="Expand every folder">Expand all</button></div>` : '') +
-    treeHtml(tree, 0, counts).html;
+    filter +
+    trees.map(t => (t.kind ? `<div class="group">${KIND_LABEL[t.kind]}${linesHtml(sumLines(t.entries.map(e => e.f)))}</div>` : '') +
+      treeHtml(t.tree, 0, counts).html).join('');
   markCurrentFile();
 }
 
@@ -570,7 +642,7 @@ function toggleFiles() {
 // and keeps that row in view in the sidebar.
 function markCurrentFile() {
   if (!view) return;
-  const sections = $$('#diff > .file');
+  const sections = $$('#diff > .file:not(.filtered)');
   let cur = sections[0];
   for (const sec of sections) {
     // Just past the scroll-margin-top a tree jump leaves above a file.
@@ -591,15 +663,16 @@ function markCurrentFile() {
 
 // Folders keep the order git lists the files in. A folder whose only child is another folder is
 // merged into it ("app/src/main/java/..."), so deep package paths take one row instead of ten.
-function fileTree(files) {
+// `group` keeps a folder's collapsed state separate per tree, since code and tests share roots.
+function fileTree(entries, group) {
   const root = {kids: []};
-  files.forEach((f, i) => {
+  entries.forEach(({f, i}) => {
     const parts = f.path.split('/');
     let node = root, dir = '';
     for (const part of parts.slice(0, -1)) {
       dir = dir ? `${dir}/${part}` : part;
       let next = node.kids.find(k => k.dir === dir);
-      if (!next) { next = {name: part, dir, kids: []}; node.kids.push(next); }
+      if (!next) { next = {name: part, dir, group, kids: []}; node.kids.push(next); }
       node = next;
     }
     node.kids.push({name: parts[parts.length - 1], file: f, i});
@@ -625,8 +698,9 @@ function treeHtml(node, depth, counts) {
   for (const k of node.kids) {
     if (k.kids) {
       const sub = treeHtml(k, depth + 1, counts);
-      const closed = pref(`dir:${k.dir}`, '') === '1';
-      html += `<div class="dir${closed ? ' closed' : ''}${sub.viewed ? ' viewed' : ''}" data-act="toggle-dir" data-dir="${esc(k.dir)}" ${pad} title="${esc(k.dir)}">
+      const id = `${k.group}:${k.dir}`;
+      const closed = pref(`dir:${id}`, '') === '1';
+      html += `<div class="dir${closed ? ' closed' : ''}${sub.viewed ? ' viewed' : ''}" data-act="toggle-dir" data-dir="${esc(id)}" ${pad} title="${esc(k.dir)}">
         <span class="caret">▾</span><span class="name">&lrm;${esc(k.name)}&lrm;</span>
         ${closed && sub.cnt ? `<span class="cnt">${sub.cnt}</span>` : ''}</div><div class="kids">${sub.html}</div>`;
       cnt += sub.cnt; viewed = viewed && sub.viewed;
@@ -852,7 +926,11 @@ async function onClick(e) {
   const file = btn.closest('.file');
   const f = file && view.files[+file.dataset.i];
   try {
-    if (act === 'collapse-all' || act === 'expand-all') {
+    if (act === 'kind') {
+      setPref('kind', btn.dataset.kind);
+      applyKindFilter();
+      window.scrollTo({top: 0});
+    } else if (act === 'collapse-all' || act === 'expand-all') {
       for (const d of $$('#files .dir')) {
         if (act === 'collapse-all') setPref(`dir:${d.dataset.dir}`, '1'); else localStorage.removeItem(key(`dir:${d.dataset.dir}`));
       }

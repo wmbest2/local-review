@@ -120,6 +120,27 @@ class LocalReviewTest(unittest.TestCase):
         self.write("Foo.kt", FOO_V2.replace("}\n\nfun b", "}\nfun b").replace("fun b() {\n    return 42 // magic\n}\n", "fun b() = 0\n"))
         self.assertIn("originally lines 5-7", self.cli(lr.cmd_list, all=False, json=False))
 
+    def test_classifies_tests_by_path_with_overrides(self):
+        is_test = lr.test_classifier(self.repo)
+        for path in ["app/src/test/java/com/x/FooTest.kt", "app/src/androidTest/java/Foo.kt",
+                     "app/src/sharedTest/java/Fakes.kt", "app/src/testProdDebug/Foo.kt", "lib/FooTests.swift",
+                     "pkg/foo_test.go", "test_local_review.py", "web/src/a.spec.ts", "__tests__/x.js", "conftest.py"]:
+            self.assertTrue(is_test(path), path)
+        for path in ["app/src/main/java/com/x/Foo.kt", "app/src/main/java/com/x/Latest.kt", "README.md",
+                     "app/src/main/java/com/x/testing.kt", "contest/Entry.kt", None]:
+            self.assertFalse(is_test(path), path)
+
+        sh(self.dir, "git", "config", "--add", "local-review.tests", "*PreviewData.kt")
+        sh(self.dir, "git", "config", "--add", "local-review.notTests", "app/src/test/java/com/x/Real.kt")
+        is_test = lr.test_classifier(self.repo)
+        self.assertTrue(is_test("app/src/main/java/com/x/ActivityCenterPreviewData.kt"))
+        self.assertFalse(is_test("app/src/test/java/com/x/Real.kt"))
+
+        self.write("FooTest.kt", "class FooTest\n")
+        files = self.files("branch")
+        self.assertTrue(files["FooTest.kt"]["test"])
+        self.assertFalse(files["Foo.kt"]["test"])
+
     def test_watch_once(self):
         lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "x"})
         out = io.StringIO()

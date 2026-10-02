@@ -12,6 +12,7 @@ State lives in <git-dir>/local-review/state.json, so it is per-worktree and neve
 """
 import argparse
 import fcntl
+import fnmatch
 import glob
 import hashlib
 import json
@@ -239,6 +240,47 @@ def parse_diff(text):
     return files
 
 
+# ------------------------------------------------------------------------------------------- tests
+
+# Folders whose contents are tests: common test roots plus Gradle/Android test source sets
+# (src/test, src/androidTest, src/testProdDebug, src/sharedTest, src/testFixtures, ...).
+TEST_DIR = re.compile(r"^(tests?|__tests__|specs?|e2e|androidTest\w*|sharedTest\w*|testFixtures\w*|test[A-Z]\w*)$")
+# Test file names for languages where tests can sit next to the code they cover.
+TEST_FILE = re.compile(
+    r"(\w(Tests?|Spec)\.(kt|kts|java|scala|groovy|swift|m|cs)"  # FooTest.kt, FooTests.swift, FooSpec.groovy
+    r"|^test_.+\.\w+|_test\.(py|go|rb|exs?|dart|c|cc|cpp|rs)|_spec\.rb"  # test_foo.py, foo_test.go, foo_spec.rb
+    r"|\.(test|spec)\.[cm]?[jt]sx?|^conftest\.py)$")  # foo.test.ts, foo.spec.js
+
+
+def test_classifier(repo):
+    """Returns path -> bool: is this a test file? Guessed from the path, with per-repo overrides
+    (globs matched against the whole path, or the file name when the glob has no "/"):
+
+        git config --add local-review.tests '*PreviewData.kt'
+        git config --add local-review.notTests 'app/src/testing/RealThing.kt'
+
+    notTests wins over tests, and both win over the guess."""
+    def globs(key):
+        out = repo.g("config", "--get-all", key, check=False)
+        return [g for line in out.split("\n") for g in line.split()]
+    tests, not_tests = globs("local-review.tests"), globs("local-review.notTests")
+
+    def matches(path, pats):
+        name = path.rsplit("/", 1)[-1]
+        return any(fnmatch.fnmatchcase(path if "/" in p else name, p) for p in pats)
+
+    def is_test(path):
+        if not path:
+            return False
+        if matches(path, not_tests):
+            return False
+        if matches(path, tests):
+            return True
+        *dirs, name = path.split("/")
+        return any(TEST_DIR.match(d) for d in dirs) or bool(TEST_FILE.search(name))
+    return is_test
+
+
 # ------------------------------------------------------------------------------------------- stack
 
 
@@ -349,8 +391,12 @@ def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=F
         tip = resolve_ref(repo, branch) if mode == "stack" else "HEAD"
         log = repo.g("log", "--format=%h %s", f"{old}..{tip}")
         commits = [ln for ln in log.split("\n") if ln]
+    files = parse_diff(text)
+    is_test = test_classifier(repo)
+    for f in files:
+        f["test"] = is_test(f["path"])
     return {"mode": mode, "base": base, "branch": branch if mode == "stack" else None, "old_rev": old,
-            "new_tree": new_tree, "label": label, "commits": commits, "files": parse_diff(text)}
+            "new_tree": new_tree, "label": label, "commits": commits, "files": files}
 
 
 # ------------------------------------------------------------------------------------------- state
@@ -841,8 +887,10 @@ def cmd_list(repo, args):
     if any(c.get("branch") for c in sel):
         print("Comments marked [branch] belong to that stack branch: check it out to change it, then rebase\n"
               "the branches stacked above it.\n")
+    is_test = test_classifier(repo)
     for c in sel:
-        print(f"## {c['id']} · {c['status']} · {location(c)}\n")
+        kind = " · test" if is_test(c.get("file")) else ""
+        print(f"## {c['id']} · {c['status']} · {location(c)}{kind}\n")
         if c.get("file"):
             print("```")
             print(excerpt(repo, c))
