@@ -101,7 +101,6 @@
   .tag { font-size: 10.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; border-radius: 4px; padding: 0 5px;
          line-height: 16px; color: var(--draft); border: 1px solid var(--draft); }
   .filtered { display: none !important; }
-  #totals .split { color: var(--faint); }
   aside .cnt { font-size: 11px; background: var(--accent); color: #fff; border-radius: 10px; padding: 0 7px; line-height: 18px; }
   .st { font-family: var(--mono); font-size: 11px; width: 12px; font-weight: 600; color: var(--warn); }
   .st.added { color: var(--add-sign); } .st.deleted { color: var(--del-sign); } .st.modified { color: var(--muted); }
@@ -118,7 +117,11 @@
            background: var(--panel); border-bottom: 1px solid var(--border); }
   .fhead .path { font-family: var(--mono); font-size: 12.5px; flex: 1; overflow-wrap: anywhere; font-weight: 500; }
   .fhead .toggle { width: 24px; padding: 0; border: none; background: none; color: var(--muted); }
-  #totals { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  #totals { display: flex; flex-direction: column; align-items: flex-end; justify-content: center; font-size: 12px;
+            line-height: 1.35; color: var(--muted); white-space: nowrap; }
+  #totals .total { display: flex; gap: 6px; align-items: baseline; }
+  /* The breakdown is secondary: smaller and uncoloured, so the total stays the thing you read. */
+  #totals .split { font-size: 11px; color: var(--faint); font-family: var(--mono); }
   .adds, .dels { font-family: var(--mono); font-size: 12px; font-weight: 600; }
   .adds { color: var(--add-sign); } .dels { color: var(--del-sign); }
   .file.collapsed .fbody { display: none; }
@@ -527,10 +530,11 @@ function renderTotals() {
   const files = view.files.filter(shownByFilter);
   if (!files.length) { $('#totals').innerHTML = ''; return; }
   const tests = files.filter(f => f.test), code = files.filter(f => !f.test);
+  // "+184 −10", leaving out a side that's zero.
+  const brief = ({adds, dels}) => [adds && `+${adds.toLocaleString()}`, dels && `−${dels.toLocaleString()}`].filter(Boolean).join(' ') || '0';
   const split = tests.length && code.length
-    ? `<span class="split">(code</span>${linesHtml(sumLines(code))}<span class="split">· tests</span>${linesHtml(sumLines(tests))}<span class="split">)</span>`
-    : '';
-  $('#totals').innerHTML = `${filesLabel(files.length)}${linesHtml(sumLines(files))}${split}`;
+    ? `<span class="split">code ${brief(sumLines(code))} · tests ${brief(sumLines(tests))}</span>` : '';
+  $('#totals').innerHTML = `<span class="total">${filesLabel(files.length)}${linesHtml(sumLines(files))}</span>${split}`;
 }
 
 function fileHtml(f, i) {
