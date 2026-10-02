@@ -138,6 +138,12 @@ class LocalReviewTest(unittest.TestCase):
         one = lr.compute_diff(self.repo, "branch", "main", 3, paths=["Foo.kt"])["files"]
         self.assertEqual([f["path"] for f in one], ["Foo.kt"])
 
+        # Re-fetching one file against the view's own trees, without a new snapshot.
+        view = lr.compute_diff(self.repo, "working", "main", 3)
+        again = lr.compute_diff(self.repo, "working", "main", 3, paths=["Foo.kt"],
+                                trees=(view["old_rev"], view["new_tree"]), ignore_ws=True)
+        self.assertEqual(again["files"], [], "same trees, -w: the re-indent alone is hidden")
+
     def _watch(self, out):
         with redirect_stdout(out):
             lr.cmd_watch(self.repo, SimpleNamespace(once=True, interval=0.1))
