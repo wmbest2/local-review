@@ -323,10 +323,20 @@ def resolve_view(repo, mode, base, branch=None, stack=None):
     return old, new_tree, label
 
 
-def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=False, paths=None):
+def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=False, paths=None, trees=None):
     """Diff for a view. `ignore_ws` hides whitespace-only changes (`git diff -w`); line numbers are
-    unaffected, so comments still anchor. `paths` limits the diff to those files, for re-fetching one."""
-    old, new_tree, label = resolve_view(repo, mode, base, branch, stack)
+    unaffected, so comments still anchor. `paths` limits the diff to those files, for re-fetching one.
+
+    `trees` is an (old_rev, new_tree) pair from an earlier response. Re-fetching one file with it skips
+    snapshotting the working tree, which is slow in a big repo, and keeps the file consistent with
+    the rest of the view the reviewer is looking at."""
+    if trees:
+        old, new_tree = (repo.g("rev-parse", "--verify", "--quiet", t, check=False).strip() for t in trees)
+        if not old or not new_tree:
+            raise UserError("unknown old_rev/new_tree")
+        label = ""
+    else:
+        old, new_tree, label = resolve_view(repo, mode, base, branch, stack)
     args = ["diff", "--no-color", "--no-ext-diff", "-M", f"-U{context}", "--src-prefix=a/", "--dst-prefix=b/"]
     if ignore_ws:
         args.append("-w")
@@ -599,8 +609,9 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/diff":
                 context = max(0, min(int(q.get("context", 3)), 100000))
                 paths = [p for p in (q.get("old_path"), q.get("path")) if p]
+                trees = (q["old_rev"], q["new_tree"]) if paths and q.get("old_rev") and q.get("new_tree") else None
                 self._json(compute_diff(repo, q.get("mode", self.app.mode), q.get("base") or self.app.base, context,
-                                        q.get("branch"), self.app.stack, q.get("ws") == "1", paths or None))
+                                        q.get("branch"), self.app.stack, q.get("ws") == "1", paths or None, trees))
             elif u.path == "/api/comments":
                 self._json(self._comments_payload())
             elif u.path == "/api/version":

@@ -331,6 +331,12 @@ async function refetchFile(i) {
   const q = diffParams(ignore);
   q.set('path', f.new_path || f.path);
   if (f.old_path && f.old_path !== f.new_path) q.set('old_path', f.old_path);
+  // Diff against the trees this view was built from: no fresh working-tree snapshot, which is slow
+  // in a big repo, and the file stays consistent with everything else on the page.
+  q.set('old_rev', view.old_rev);
+  q.set('new_tree', view.new_tree);
+  const btn = $(`#f${i} [data-act=toggle-ws]`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
   const res = await api(`/api/diff?${q}`);
   // With -w a file whose every change is whitespace drops out of the diff entirely.
   const next = res.files[0] || {...f, hunks: [], additions: 0, deletions: 0};
