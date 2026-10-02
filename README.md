@@ -39,6 +39,8 @@ B | story/PROJ-2-wiring | Wire it up behind a flag
 
 Pick the branch from the **Branch** menu. The checked-out branch is reviewed with its working tree (uncommitted edits included); the others are reviewed as committed. Comments remember their branch, anchor to that branch's code, and only show while that branch is selected. `local-review list` prefixes them with `[branch]`, and `list --branch <b>` filters to one. Use `serve --stack FILE` for a config elsewhere.
 
+**Hide whitespace** (header) diffs with `git diff -w`, so re-indents don't bury the real change; each file's header also has its own **Hide/Show whitespace** button that overrides it for that file. Line numbers don't change, so comments stay anchored.
+
 ### Review flow
 1. Hover a line and click **+** to write a comment. Comments stay **drafts** (invisible to the agent) until you click **Submit review**. You can include an overall summary.
 2. The agent runs `local-review list`, makes changes, and runs `local-review reply <id> [--addressed] -m "..."`.

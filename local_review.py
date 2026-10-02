@@ -323,10 +323,17 @@ def resolve_view(repo, mode, base, branch=None, stack=None):
     return old, new_tree, label
 
 
-def compute_diff(repo, mode, base, context, branch=None, stack=None):
+def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=False, paths=None):
+    """Diff for a view. `ignore_ws` hides whitespace-only changes (`git diff -w`); line numbers are
+    unaffected, so comments still anchor. `paths` limits the diff to those files, for re-fetching one."""
     old, new_tree, label = resolve_view(repo, mode, base, branch, stack)
-    text = repo.g("diff", "--no-color", "--no-ext-diff", "-M", f"-U{context}",
-                  "--src-prefix=a/", "--dst-prefix=b/", old, new_tree)
+    args = ["diff", "--no-color", "--no-ext-diff", "-M", f"-U{context}", "--src-prefix=a/", "--dst-prefix=b/"]
+    if ignore_ws:
+        args.append("-w")
+    args += [old, new_tree]
+    if paths:
+        args += ["--", *paths]
+    text = repo.g(*args)
     commits = []
     if mode in ("branch", "stack"):
         tip = resolve_ref(repo, branch) if mode == "stack" else "HEAD"
@@ -591,8 +598,9 @@ class Handler(BaseHTTPRequestHandler):
                             "stack": self.app.stack["phases"] if self.app.stack else None})
             elif u.path == "/api/diff":
                 context = max(0, min(int(q.get("context", 3)), 100000))
+                paths = [p for p in (q.get("old_path"), q.get("path")) if p]
                 self._json(compute_diff(repo, q.get("mode", self.app.mode), q.get("base") or self.app.base, context,
-                                        q.get("branch"), self.app.stack))
+                                        q.get("branch"), self.app.stack, q.get("ws") == "1", paths or None))
             elif u.path == "/api/comments":
                 self._json(self._comments_payload())
             elif u.path == "/api/version":

@@ -165,6 +165,7 @@
       <option value="100000">Full file</option>
     </select>
   </label>
+  <label class="hint" title="Hide changes that only add or remove whitespace (git diff -w)"><input type="checkbox" id="ws"> Hide whitespace</label>
   <button id="refresh" title="Re-read the working tree (r)">Refresh</button>
   <span class="spacer"></span>
   <span id="counts" class="hint"></span>
@@ -258,6 +259,8 @@ async function init() {
   if (!meta.stack && $('#mode').value === 'stack') $('#mode').value = 'branch';
   $('#base').value = pref('base', meta.base);
   $('#context').value = pref('context', '3');
+  $('#ws').checked = pref('ws', '0') === '1';
+  $('#ws').onchange = () => { setPref('ws', $('#ws').checked ? '1' : '0'); wsOverride.clear(); loadDiff(); };
   $('#mode').onchange = () => { setPref('mode', $('#mode').value); loadDiff(); };
   $('#base').onchange = () => { setPref('base', $('#base').value.trim()); loadDiff(); };
   $('#context').onchange = () => { setPref('context', $('#context').value); loadDiff(); };
@@ -287,8 +290,7 @@ async function loadDiff() {
   $('#base-wrap').style.display = mode === 'branch' ? '' : 'none';
   $('#stack-wrap').hidden = mode !== 'stack';
   $('#mode option[value=since]').disabled = !reviews.length;
-  const q = new URLSearchParams({mode, base: $('#base').value.trim(), context: $('#context').value});
-  if (mode === 'stack') q.set('branch', $('#stack-branch').value);
+  const q = diffParams($('#ws').checked);
   const shown = mode === 'stack' ? $('#stack-branch').value : meta.branch;
   $('#title').textContent = `${meta.name} · ${shown}`;
   $('#title').title = `${meta.name} · ${shown}`;
@@ -304,6 +306,40 @@ async function loadDiff() {
   $('#loading').hidden = true;
   $('#content').hidden = false;
   renderDiff();
+  renderComments();
+  // Re-apply per-file whitespace overrides that differ from the header setting.
+  for (const [i, f] of view.files.entries()) {
+    if (wsOverride.has(f.path) && wsOverride.get(f.path) !== $('#ws').checked) await refetchFile(i);
+  }
+}
+
+function diffParams(ignoreWs) {
+  const mode = $('#mode').value;
+  const q = new URLSearchParams({mode, base: $('#base').value.trim(), context: $('#context').value, ws: ignoreWs ? '1' : '0'});
+  if (mode === 'stack') q.set('branch', $('#stack-branch').value);
+  return q;
+}
+
+// Per-file "hide whitespace", overriding the header checkbox for that file only. Keyed by path.
+const wsOverride = new Map();
+const ignoresWs = f => wsOverride.has(f.path) ? wsOverride.get(f.path) : $('#ws').checked;
+
+// Re-diffs one file with its whitespace setting and swaps it into the view in place.
+async function refetchFile(i) {
+  const f = view.files[i];
+  const ignore = ignoresWs(f);
+  const q = diffParams(ignore);
+  q.set('path', f.new_path || f.path);
+  if (f.old_path && f.old_path !== f.new_path) q.set('old_path', f.old_path);
+  const res = await api(`/api/diff?${q}`);
+  // With -w a file whose every change is whitespace drops out of the diff entirely.
+  const next = res.files[0] || {...f, hunks: [], additions: 0, deletions: 0};
+  view.files[i] = {...next, hash: f.hash, wsOnly: !res.files.length && ignore};
+  const section = $(`#f${i}`);
+  const wasCollapsed = section.classList.contains('collapsed');
+  section.outerHTML = fileHtml(view.files[i], i);
+  if (wasCollapsed) $(`#f${i}`).classList.add('collapsed');
+  else if (view.files[i].additions + view.files[i].deletions <= LARGE) fillBody(i);
   renderComments();
 }
 
@@ -393,6 +429,7 @@ function fileHtml(f, i) {
       <span class="st ${f.status}">${f.status[0].toUpperCase()}</span>
       <span class="path">${path}</span>
       <span class="adds">+${f.additions}</span><span class="dels">−${f.deletions}</span>
+      <button class="link" data-act="toggle-ws" title="Only for this file; the header checkbox sets the default">${ignoresWs(f) ? 'Show whitespace' : 'Hide whitespace'}</button>
       <button class="link" data-act="file-comment" ${f.new_path ? '' : 'hidden'}>Comment on file</button>
       <label class="hint"><input type="checkbox" data-act="viewed" ${isViewed(f) ? 'checked' : ''}> Viewed</label>
     </div>
@@ -410,7 +447,11 @@ function fillBody(i) {
   if (el.dataset.filled) return;
   el.dataset.filled = '1';
   if (f.binary) { el.innerHTML = '<div class="note">Binary file</div>'; return; }
-  if (!f.hunks.length) { el.innerHTML = `<div class="note">${f.status === 'renamed' ? 'Renamed without changes' : 'No textual changes'}</div>`; return; }
+  if (!f.hunks.length) {
+    const note = f.wsOnly ? 'Only whitespace changes' : f.status === 'renamed' ? 'Renamed without changes' : 'No textual changes';
+    el.innerHTML = `<div class="note">${note}</div>`;
+    return;
+  }
   const rows = [];
   const oldLang = langFor(f.old_path), newLang = langFor(f.new_path);
   for (const h of f.hunks) {
@@ -562,7 +603,10 @@ async function onClick(e) {
   const file = btn.closest('.file');
   const f = file && view.files[+file.dataset.i];
   try {
-    if (act === 'line-comment') {
+    if (act === 'toggle-ws') {
+      wsOverride.set(f.path, !ignoresWs(f));
+      await refetchFile(+file.dataset.i);
+    } else if (act === 'line-comment') {
       const row = btn.closest('tr');
       const side = row.dataset.side;
       openForm(threadContainer(row), {file: side === 'old' ? f.old_path : f.new_path, side, line: +row.dataset.line,
