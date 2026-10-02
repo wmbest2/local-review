@@ -113,6 +113,21 @@ class LocalReviewTest(unittest.TestCase):
         self.assertFalse(watcher.is_alive())
         self.assertIn(f"review {review['id']} submitted with 1 comment(s)", out.getvalue())
 
+    def test_watch_once_wakes_on_a_reviewer_reply(self):
+        lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "why 42?"})
+        [c] = [c for c in lr.load_state(self.repo)["comments"]]
+        lr.submit_review(self.repo, "")
+        lr.update_comment(self.repo, c["id"], "reply", {"body": "first"})  # before watching: not an event
+        out = io.StringIO()
+        watcher = threading.Thread(target=lambda: self._watch(out))
+        watcher.start()
+        time.sleep(0.3)
+        lr.update_comment(self.repo, c["id"], "reply", {"body": "go ahead"})
+        watcher.join(timeout=5)
+        self.assertFalse(watcher.is_alive())
+        self.assertIn(f"reviewer replied on {c['id']}", out.getvalue())
+        self.assertNotIn("submitted", out.getvalue())
+
     def _watch(self, out):
         with redirect_stdout(out):
             lr.cmd_watch(self.repo, SimpleNamespace(once=True, interval=0.1))
