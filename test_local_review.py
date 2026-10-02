@@ -128,6 +128,16 @@ class LocalReviewTest(unittest.TestCase):
         self.assertIn(f"reviewer replied on {c['id']}", out.getvalue())
         self.assertNotIn("submitted", out.getvalue())
 
+    def test_ignore_whitespace_and_single_file(self):
+        # Re-indent Foo.kt in the working tree: a whitespace-only change on top of the branch.
+        self.write("Foo.kt", FOO_V2.replace("    return 1", "        return 1"))
+        full = {f["path"]: f for f in lr.compute_diff(self.repo, "working", "main", 3)["files"]}
+        self.assertIn("Foo.kt", full)
+        hidden = {f["path"]: f for f in lr.compute_diff(self.repo, "working", "main", 3, ignore_ws=True)["files"]}
+        self.assertNotIn("Foo.kt", hidden, "a whitespace-only change disappears with -w")
+        one = lr.compute_diff(self.repo, "branch", "main", 3, paths=["Foo.kt"])["files"]
+        self.assertEqual([f["path"] for f in one], ["Foo.kt"])
+
     def _watch(self, out):
         with redirect_stdout(out):
             lr.cmd_watch(self.repo, SimpleNamespace(once=True, interval=0.1))
