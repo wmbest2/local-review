@@ -26,6 +26,18 @@ Then, in Claude Code: `/address-review`.
 - **Branch vs base**: merge-base(base, HEAD) → working tree. The final result, including uncommitted and untracked files.
 - **Uncommitted changes**: HEAD → working tree.
 - **Since last review**: snapshot taken when you last clicked Submit → working tree. Use this to check what the agent changed.
+- **Stack**: one branch of a stacked-PR series against the branch below it, matching what its PR will show. Appears when a `stack.conf` is at the repo root, and is the default when that stack includes the checked-out branch.
+
+### Stacks
+`stack.conf` uses the `push-stack` format (the stacked-PR operator tool): `key = value` settings and `tier | branch | title` rows in stack order. Each branch's parent is the row above; the first row's parent is `trunk`.
+
+```
+trunk = develop
+A | story/PROJ-1-types  | Neutral types
+B | story/PROJ-2-wiring | Wire it up behind a flag
+```
+
+Pick the branch from the **Branch** menu. The checked-out branch is reviewed with its working tree (uncommitted edits included); the others are reviewed as committed. Comments remember their branch, anchor to that branch's code, and only show while that branch is selected. `local-review list` prefixes them with `[branch]`, and `list --branch <b>` filters to one. Use `serve --stack FILE` for a config elsewhere.
 
 ### Review flow
 1. Hover a line and click **+** to write a comment. Comments stay **drafts** (invisible to the agent) until you click **Submit review**. You can include an overall summary.

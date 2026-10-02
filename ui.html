@@ -146,9 +146,11 @@
       <option value="branch">Branch vs base</option>
       <option value="working">Uncommitted changes</option>
       <option value="since">Since last review</option>
+      <option value="stack" hidden>Stack</option>
     </select>
   </label>
   <label id="base-wrap">Base <input id="base" type="text" size="16"></label>
+  <label id="stack-wrap" hidden>Branch <select id="stack-branch"></select></label>
   <label>Context
     <select id="context">
       <option value="3">3 lines</option>
@@ -234,7 +236,18 @@ async function init() {
   meta = await api('/api/meta');
   document.title = `review · ${meta.name}`;
   $('#title').textContent = `${meta.name} · ${meta.branch}`;
+  if (meta.stack) {
+    $('#mode option[value=stack]').hidden = false;
+    // "N. title", with the checked-out branch marked: its view includes uncommitted edits.
+    $('#stack-branch').innerHTML = meta.stack.map((p, i) =>
+      `<option value="${esc(p.branch)}">${i + 1}. ${esc(p.title || p.branch)}${p.branch === meta.branch ? ' (checked out)' : ''}</option>`).join('');
+    const onStack = meta.stack.some(p => p.branch === meta.branch);
+    const saved = pref('stackBranch', '');
+    $('#stack-branch').value = meta.stack.some(p => p.branch === saved) ? saved : (onStack ? meta.branch : meta.stack[0].branch);
+    $('#stack-branch').onchange = () => { setPref('stackBranch', $('#stack-branch').value); loadDiff(); };
+  }
   $('#mode').value = pref('mode', meta.mode);
+  if (!meta.stack && $('#mode').value === 'stack') $('#mode').value = 'branch';
   $('#base').value = pref('base', meta.base);
   $('#context').value = pref('context', '3');
   $('#mode').onchange = () => { setPref('mode', $('#mode').value); loadDiff(); };
@@ -264,8 +277,11 @@ async function init() {
 async function loadDiff() {
   const mode = $('#mode').value;
   $('#base-wrap').style.display = mode === 'branch' ? '' : 'none';
+  $('#stack-wrap').hidden = mode !== 'stack';
   $('#mode option[value=since]').disabled = !reviews.length;
   const q = new URLSearchParams({mode, base: $('#base').value.trim(), context: $('#context').value});
+  if (mode === 'stack') q.set('branch', $('#stack-branch').value);
+  $('#title').textContent = `${meta.name} · ${mode === 'stack' ? $('#stack-branch').value : meta.branch}`;
   $('#loading').hidden = false;
   $('#loading').textContent = 'Loading…';
   try {
@@ -420,15 +436,26 @@ function renderFileList() {
 
 // -------------------------------------------------------------------------------------- comments
 
+// The stack branch being reviewed, or null outside the stack view.
+function reviewBranch() { return view && view.mode === 'stack' ? view.branch : null; }
+
+// Comments belong to the branch they were left on. Outside the stack view, stack comments only
+// show on the checked-out branch, since that is the code the other views diff.
+function visible(c) {
+  const b = reviewBranch() ?? meta.branch;
+  return !c.branch || c.branch === b;
+}
+
 function renderComments() {
   $$('.thread').forEach(t => t.remove());
   $$('tr.thread-row').forEach(r => { if (!r.querySelector('.cform')) r.remove(); });
   const fileIdx = {}, oldIdx = {};
   view.files.forEach((f, i) => { if (f.new_path) fileIdx[f.new_path] = i; if (f.old_path) oldIdx[f.old_path] = i; });
   let other = 0;
-  const general = comments.filter(c => !c.file);
+  const shown = comments.filter(visible);
+  const general = shown.filter(c => !c.file);
   for (const c of general) $('#general-threads').appendChild(threadEl(c, false));
-  for (const c of comments.filter(c => c.file)) {
+  for (const c of shown.filter(c => c.file)) {
     const i = c.side === 'old' ? (c.old_rev === view.old_rev ? oldIdx[c.file] : undefined) : fileIdx[c.file];
     if (i === undefined) { $('#other-threads').appendChild(threadEl(c, true)); other++; continue; }
     const body = $(`#f${i} .rows`);
@@ -538,7 +565,7 @@ async function onClick(e) {
       const form = btn.closest('.cform');
       const body = form.querySelector('textarea').value;
       if (!body.trim()) return;
-      await api('/api/comments', {...form.target, body});
+      await api('/api/comments', {...form.target, body, branch: reviewBranch()});
       closeForm(form);
       await loadComments();
     } else if (act === 'cancel-form') {

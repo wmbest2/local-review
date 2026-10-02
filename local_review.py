@@ -5,6 +5,9 @@ Human side:  `local-review` opens a browser UI to review the branch (or uncommit
              leave line comments as drafts, and submit them as a batch.
 Agent side:  `local-review list` / `local-review reply` read and answer submitted comments.
 
+Stacks:      with a `stack.conf` (the push-stack format) at the repo root, the "stack" view reviews
+             each branch of a stacked-PR series against the branch below it, like its PR will.
+
 State lives in <git-dir>/local-review/state.json, so it is per-worktree and never committed.
 """
 import argparse
@@ -127,6 +130,13 @@ class Repo:
         except OSError:
             return None
 
+    def branch_file_lines(self, branch, path):
+        """A file as a review of `branch` sees it: the working tree when that branch is checked out
+        (so uncommitted edits count), otherwise the branch's committed content."""
+        if not branch or branch == self.branch():
+            return self.working_file_lines(path)
+        return self.rev_file_lines(branch, path)
+
     def rev_file_lines(self, rev, path):
         p = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=self.root, capture_output=True)
         if p.returncode != 0:
@@ -229,8 +239,69 @@ def parse_diff(text):
     return files
 
 
-def resolve_view(repo, mode, base):
+# ------------------------------------------------------------------------------------------- stack
+
+
+def load_stack(repo, path=None):
+    """Reads a push-stack `stack.conf`: `key = value` settings plus `tier | branch | title` rows in
+    stack order. Each branch's parent is the row above it; the first row's parent is `trunk`.
+    Returns {"trunk", "phases": [{"branch", "parent", "tier", "title"}]} or None without a file."""
+    path = path or os.path.join(repo.root, "stack.conf")
+    try:
+        with open(path) as f:
+            raw = f.read().split("\n")
+    except FileNotFoundError:
+        return None
+    settings, rows = {}, []
+    for line in raw:
+        line = re.sub(r"\s+#.*$", "", line).strip()
+        if not line or line.startswith("#"):
+            continue
+        if "|" in line:
+            parts = [x.strip() for x in line.split("|", 2)]
+            if len(parts) == 3 and parts[1]:
+                rows.append({"tier": parts[0], "branch": parts[1], "title": parts[2]})
+        elif "=" in line:
+            k, v = line.split("=", 1)
+            settings[k.strip()] = v.strip()
+    if not rows:
+        return None
+    trunk = settings.get("trunk") or repo.default_base()
+    parent = trunk
+    for r in rows:
+        r["parent"] = parent
+        parent = r["branch"]
+    return {"trunk": trunk, "phases": rows}
+
+
+def stack_phase(stack, branch):
+    for phase in (stack or {}).get("phases", []):
+        if phase["branch"] == branch:
+            return phase
+    raise UserError(f"{branch} is not in the stack" if stack else "no stack.conf found")
+
+
+def resolve_ref(repo, ref):
+    """A branch that only exists on the remote (e.g. a merged-away trunk) still resolves."""
+    if repo.rev(ref):
+        return ref
+    if repo.rev(f"origin/{ref}"):
+        return f"origin/{ref}"
+    raise UserError(f"unknown ref: {ref}")
+
+
+def resolve_view(repo, mode, base, branch=None, stack=None):
     """Returns (old_rev, new_tree, description) for a diff mode, snapshotting the working tree."""
+    if mode == "stack":
+        phase = stack_phase(stack, branch)
+        tip = resolve_ref(repo, branch)
+        parent = resolve_ref(repo, phase["parent"])
+        old = repo.g("merge-base", parent, tip).strip()
+        if branch == repo.branch():
+            new_tree, where = repo.snapshot_tree(), "working tree"
+        else:
+            new_tree, where = repo.g("rev-parse", f"{tip}^{{tree}}").strip(), "committed"
+        return old, new_tree, f"{phase['parent']} → {branch} ({where})"
     new_tree = repo.snapshot_tree()
     if mode == "branch":
         if not repo.rev(base):
@@ -252,16 +323,17 @@ def resolve_view(repo, mode, base):
     return old, new_tree, label
 
 
-def compute_diff(repo, mode, base, context):
-    old, new_tree, label = resolve_view(repo, mode, base)
+def compute_diff(repo, mode, base, context, branch=None, stack=None):
+    old, new_tree, label = resolve_view(repo, mode, base, branch, stack)
     text = repo.g("diff", "--no-color", "--no-ext-diff", "-M", f"-U{context}",
                   "--src-prefix=a/", "--dst-prefix=b/", old, new_tree)
     commits = []
-    if mode == "branch":
-        log = repo.g("log", "--format=%h %s", f"{old}..HEAD")
+    if mode in ("branch", "stack"):
+        tip = resolve_ref(repo, branch) if mode == "stack" else "HEAD"
+        log = repo.g("log", "--format=%h %s", f"{old}..{tip}")
         commits = [ln for ln in log.split("\n") if ln]
-    return {"mode": mode, "base": base, "old_rev": old, "new_tree": new_tree, "label": label,
-            "commits": commits, "files": parse_diff(text)}
+    return {"mode": mode, "base": base, "branch": branch if mode == "stack" else None, "old_rev": old,
+            "new_tree": new_tree, "label": label, "commits": commits, "files": parse_diff(text)}
 
 
 # ------------------------------------------------------------------------------------------- state
@@ -355,9 +427,10 @@ def annotate(repo, comments):
         if c["side"] == "old":
             c["current_line"] = c["anchor"]["line"]
             continue
-        if c["file"] not in cache:
-            cache[c["file"]] = repo.working_file_lines(c["file"])
-        lines = cache[c["file"]]
+        key = (c.get("branch"), c["file"])
+        if key not in cache:
+            cache[key] = repo.branch_file_lines(c.get("branch"), c["file"])
+        lines = cache[key]
         found = locate(lines, c["anchor"]) if lines is not None else None
         c["current_line"] = found
         c["outdated"] = found is None
@@ -370,13 +443,13 @@ def add_comment(repo, data):
         raise UserError("comment body is empty")
     comment = {"status": "draft", "review_id": None, "created_at": now(), "author": REVIEWER,
                "body": body, "replies": [], "file": None, "side": None, "anchor": None,
-               "old_rev": None, "head": repo.head()}
+               "old_rev": None, "head": repo.head(), "branch": data.get("branch") or None}
     path = data.get("file")
     if path:
         side = data.get("side")
         line = int(data.get("line"))
         if side == "new":
-            lines = repo.working_file_lines(path)
+            lines = repo.branch_file_lines(comment["branch"], path)
         elif side == "old":
             if not data.get("old_rev"):
                 raise UserError("old_rev required for old-side comments")
@@ -456,8 +529,8 @@ def update_comment(repo, cid, action, data):
 
 
 class App:
-    def __init__(self, repo, base, mode):
-        self.repo, self.base, self.mode = repo, base, mode
+    def __init__(self, repo, base, mode, stack=None):
+        self.repo, self.base, self.mode, self.stack = repo, base, mode, stack
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -514,10 +587,12 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/meta":
                 st = load_state(repo)
                 self._json({"root": repo.root, "name": os.path.basename(repo.root), "branch": repo.branch(),
-                            "base": self.app.base, "mode": self.app.mode, "has_review": bool(st["reviews"])})
+                            "base": self.app.base, "mode": self.app.mode, "has_review": bool(st["reviews"]),
+                            "stack": self.app.stack["phases"] if self.app.stack else None})
             elif u.path == "/api/diff":
                 context = max(0, min(int(q.get("context", 3)), 100000))
-                self._json(compute_diff(repo, q.get("mode", self.app.mode), q.get("base") or self.app.base, context))
+                self._json(compute_diff(repo, q.get("mode", self.app.mode), q.get("base") or self.app.base, context,
+                                        q.get("branch"), self.app.stack))
             elif u.path == "/api/comments":
                 self._json(self._comments_payload())
             elif u.path == "/api/version":
@@ -636,6 +711,14 @@ def cmd_serve(repo, args):
     base = args.base or repo.default_base()
     if not repo.rev(base):
         raise UserError(f"unknown base ref: {base}")
+    stack = load_stack(repo, getattr(args, "stack", None))
+    mode = args.mode
+    if mode is None:
+        # A stack that includes the checked-out branch is almost certainly what's under review.
+        on_stack = bool(stack) and any(p["branch"] == repo.branch() for p in stack["phases"])
+        mode = "stack" if on_stack else "branch"
+    if mode == "stack" and not stack:
+        raise UserError("stack view needs a stack.conf at the repo root (or --stack FILE)")
     port = args.port or 7400 + int(hashlib.sha1(repo.root.encode()).hexdigest(), 16) % 500
     try:
         prune_orphans(repo)
@@ -652,9 +735,10 @@ def cmd_serve(repo, args):
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    httpd.app = App(repo, base, args.mode)
+    httpd.app = App(repo, base, mode, stack)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/"
-    print(f"local-review: {repo.root}\n  base: {base}\n  url:  {url}\n(Ctrl-C to stop)", flush=True)
+    where = f"stack: {len(stack['phases'])} branches on {stack['trunk']}" if mode == "stack" else f"base: {base}"
+    print(f"local-review: {repo.root}\n  {where}\n  url:  {url}\n(Ctrl-C to stop)", flush=True)
     if not args.no_open:
         webbrowser.open(url)
     try:
@@ -670,7 +754,7 @@ def excerpt(repo, c):
     """Code around a comment, with line numbers and a marker on the commented line."""
     a = c["anchor"]
     if c["side"] == "new" and c["current_line"]:
-        lines = repo.working_file_lines(c["file"]) or []
+        lines = repo.branch_file_lines(c.get("branch"), c["file"]) or []
         at = c["current_line"]
         start = max(1, at - CONTEXT_LINES)
         numbered = [(i, lines[i - 1]) for i in range(start, min(len(lines), at + CONTEXT_LINES) + 1)]
@@ -684,6 +768,11 @@ def excerpt(repo, c):
 
 
 def location(c):
+    prefix = f"[{c['branch']}] " if c.get("branch") else ""
+    return prefix + _location(c)
+
+
+def _location(c):
     if not c.get("file"):
         return "(general review comment)"
     if c["side"] == "old":
@@ -698,7 +787,9 @@ def cmd_list(repo, args):
         comments = annotate(repo, st["comments"])
     statuses = {"open", "replied", "addressed", "resolved"} if args.all else {"open"}
     sel = [c for c in comments if c["status"] in statuses]
-    sel.sort(key=lambda c: (c.get("file") is not None, c.get("file") or "", c.get("current_line") or 0))
+    if getattr(args, "branch", None):
+        sel = [c for c in sel if c.get("branch") == args.branch]
+    sel.sort(key=lambda c: (c.get("branch") or "", c.get("file") is not None, c.get("file") or "", c.get("current_line") or 0))
     if args.json:
         print(json.dumps(sel, indent=2))
         return
@@ -707,6 +798,9 @@ def cmd_list(repo, args):
         return
     print(f"# {len(sel)} review comment(s) in {repo.root}\n")
     print(f"Reply with: local-review reply <id> [--addressed] -m \"...\"\n")
+    if any(c.get("branch") for c in sel):
+        print("Comments marked [branch] belong to that stack branch: check it out to change it, then rebase\n"
+              "the branches stacked above it.\n")
     for c in sel:
         print(f"## {c['id']} · {c['status']} · {location(c)}\n")
         if c.get("file"):
@@ -773,13 +867,16 @@ def main():
 
     s = sub.add_parser("serve", help="open the review UI (default command)")
     s.add_argument("--base", help="base ref for branch mode (default: origin/HEAD)")
-    s.add_argument("--mode", choices=["branch", "working", "since"], default="branch")
+    s.add_argument("--mode", choices=["branch", "working", "since", "stack"],
+                   help="default: stack when stack.conf lists the checked-out branch, else branch")
+    s.add_argument("--stack", help="stack.conf path (default: <repo>/stack.conf)")
     s.add_argument("--port", type=int)
     s.add_argument("--no-open", action="store_true", help="don't open a browser")
 
     s = sub.add_parser("list", help="print open review comments (for the agent)")
     s.add_argument("--all", action="store_true", help="include replied/addressed/resolved")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--branch", help="only comments left on this stack branch")
 
     s = sub.add_parser("reply", help="reply to a comment as the agent")
     s.add_argument("id")
