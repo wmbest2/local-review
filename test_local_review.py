@@ -124,6 +124,7 @@ class LocalReviewTest(unittest.TestCase):
         is_test = lr.test_classifier(self.repo)
         for path in ["app/src/test/java/com/x/FooTest.kt", "app/src/androidTest/java/Foo.kt",
                      "app/src/sharedTest/java/Fakes.kt", "app/src/testProdDebug/Foo.kt", "lib/FooTests.swift",
+                     "core/src/commonTest/kotlin/A.kt", "core/src/androidUnitTest/kotlin/B.kt", "core/src/iosTest/kotlin/C.kt",
                      "pkg/foo_test.go", "test_local_review.py", "web/src/a.spec.ts", "__tests__/x.js", "conftest.py"]:
             self.assertTrue(is_test(path), path)
         for path in ["app/src/main/java/com/x/Foo.kt", "app/src/main/java/com/x/Latest.kt", "README.md",
@@ -140,6 +141,38 @@ class LocalReviewTest(unittest.TestCase):
         files = self.files("branch")
         self.assertTrue(files["FooTest.kt"]["test"])
         self.assertFalse(files["Foo.kt"]["test"])
+
+    def test_classifies_project_files_and_resources(self):
+        kind = lr.kind_classifier(self.repo)
+        expected = {
+            "project": ["build.gradle.kts", "core/build.gradle.kts", "settings.gradle.kts", "gradle/libs.versions.toml",
+                        "gradle.properties", "build-logic/convention/src/main/kotlin/kmp-lib.gradle.kts",
+                        "app/src/main/AndroidManifest.xml", "app/proguard-rules.pro", "core/src/nativeInterop/cinterop/x.def",
+                        "Package.swift", "App.xcodeproj/project.pbxproj", ".github/workflows/ci.yml", ".gitignore",
+                        "pyproject.toml", "package.json"],
+            "resources": ["app/src/main/res/values/strings.xml", "app/src/main/res/drawable/logo.png",
+                          "core/src/main/resources/rules.tsv", "App/Assets.xcassets/a.imageset/Contents.json",
+                          "App/en.lproj/Localizable.strings", "App/Main.storyboard", "web/public/logo.svg"],
+            "tests": ["core/src/test/resources/vectors.tsv", "app/src/test/AndroidManifest.xml"],
+            "code": ["app/src/main/java/com/x/resources/Strings.kt", "app/src/main/java/com/x/ui/layout/Row.kt",
+                     "README.md", "core/src/commonMain/kotlin/Platform.kt", None],
+        }
+        for k, paths in expected.items():
+            for path in paths:
+                self.assertEqual(kind(path), k, path)
+
+        sh(self.dir, "git", "config", "--add", "local-review.project", "scripts/*")
+        sh(self.dir, "git", "config", "--add", "local-review.resources", "*.json")
+        sh(self.dir, "git", "config", "--add", "local-review.code", "app/src/main/res/raw/rules.js")
+        kind = lr.kind_classifier(self.repo)
+        self.assertEqual(kind("scripts/release.sh"), "project")
+        self.assertEqual(kind("config/flags.json"), "resources")
+        self.assertEqual(kind("app/src/main/res/raw/rules.js"), "code")
+
+        self.write("build.gradle.kts", "plugins {}\n")
+        files = self.files("branch")
+        self.assertEqual(files["build.gradle.kts"]["kind"], "project")
+        self.assertEqual(files["Foo.kt"]["kind"], "code")
 
     def test_watch_once(self):
         lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "x"})

@@ -21,4 +21,14 @@ out.forEach((l, i) => assert.equal(strip(l), kt[i]));
 const xml = highlightLines(['<string name="a">Hi &amp; bye</string>', ''], 'xml');
 assert.equal(xml.length, 2); assert.equal(strip(xml[0]), '<string name="a">Hi &amp; bye</string>');
 assert.deepEqual(highlightLines(['<x>'], null), ['&lt;x&gt;']);
+// Side by side: context fills both halves, a change pairs dels with adds row by row, leftovers go blank.
+eval(grab('fillSideBySide'));
+const el = {};
+fillSideBySide({old_path: 'a.txt', new_path: 'a.txt', hunks: [{header: '@@ -1,4 +1,3 @@', lines: [
+  {t: 'ctx', o: 1, n: 1, s: 'same'}, {t: 'del', o: 2, n: null, s: 'old1'}, {t: 'del', o: 3, n: null, s: 'old2'},
+  {t: 'add', o: null, n: 2, s: 'new1'}, {t: 'ctx', o: 4, n: 3, s: 'tail'}]}]}, el);
+const sbsRows = [...el.innerHTML.matchAll(/<tr class="ln (\w+)"[^>]*data-o="(\d*)" data-n="(\d*)">/g)].map(m => m.slice(1).join(':'));
+assert.deepEqual(sbsRows, ['ctx:1:1', 'change:2:2', 'change:3:', 'ctx:4:3']);
+assert.equal((el.innerHTML.match(/class="code blank"/g) || []).length, 1);
+assert.ok(el.innerHTML.includes('data-side="old"') && el.innerHTML.includes('colspan="4"'));
 console.log('highlight tests OK'); console.log(out[1]);
