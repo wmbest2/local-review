@@ -128,7 +128,17 @@
   #totals { display: flex; flex-direction: column; align-items: flex-end; justify-content: center; font-size: 12px;
             line-height: 1.35; color: var(--muted); white-space: nowrap; }
   #totals .total { display: flex; gap: 6px; align-items: baseline; }
-  /* The breakdown is secondary: smaller and uncoloured, so the total stays the thing you read. */
+  /* Per-kind breakdown: a popover under the totals on hover or keyboard focus, so the header stays one line. */
+  #totals { position: relative; outline: none; }
+  #totals.has-kinds { cursor: default; }
+  #totals.has-kinds .total::after { content: '▾'; font-size: 12px; color: var(--muted); }
+  #totals .kinds { display: none; position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; padding: 8px 12px;
+                   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+                   box-shadow: 0 8px 24px rgba(0, 0, 0, .3); }
+  #totals .kinds::before { content: ''; position: absolute; left: 0; right: 0; top: -9px; height: 9px; }
+  #totals.has-kinds:hover .kinds, #totals.has-kinds:focus-within .kinds { display: block; }
+  #totals .kinds td { padding: 2px 0 2px 16px; text-align: right; font-size: 12px; }
+  #totals .kinds td:first-child { padding-left: 0; text-align: left; color: var(--fg); }
   .adds, .dels { font-family: var(--mono); font-size: 12px; font-weight: 600; }
   .adds { color: var(--add-sign); } .dels { color: var(--del-sign); }
   .file.collapsed .fbody { display: none; }
@@ -226,7 +236,7 @@
   <label class="hint" title="Old and new side by side instead of one column (s)"><input type="checkbox" id="sbs"> Side by side</label>
   <button id="refresh" title="Re-read the working tree (r)">Refresh</button>
   <span class="spacer"></span>
-  <span id="totals" title="Total lines changed in this view"></span>
+  <span id="totals" tabindex="0" title="Total lines changed in this view"></span>
   <span id="counts" class="hint"></span>
   <button id="submit" class="primary">Submit review</button>
 </header>
@@ -582,13 +592,18 @@ function applyKindFilter() {
 function renderTotals() {
   const files = view.files.filter(shownByFilter);
   if (!files.length) { $('#totals').innerHTML = ''; return; }
-  // "+184 −10", leaving out a side that's zero.
-  const brief = ({adds, dels}) => [adds && `+${adds.toLocaleString()}`, dels && `−${dels.toLocaleString()}`].filter(Boolean).join(' ') || '0';
   const byKind = KIND_ORDER.map(k => [k, files.filter(f => kindOf(f) === k)]).filter(([, fs]) => fs.length);
-  // The per-kind split is in the sidebar's headings; here it's only a tooltip, to keep the header to one line.
-  $('#totals').title = ['Total lines changed in this view',
-    ...(byKind.length > 1 ? byKind.map(([k, fs]) => `${KIND_LABEL[k]}: ${filesLabel(fs.length)}, ${brief(sumLines(fs))}`) : [])].join('\n');
-  $('#totals').innerHTML = `<span class="total">${filesLabel(files.length)}${linesHtml(sumLines(files))}</span>`;
+  // The per-kind split opens as a popover on hover or focus, to keep the header to one line.
+  const split = byKind.length > 1;
+  const cell = n => n ? n.toLocaleString() : '';
+  const kinds = split ? '<table class="kinds"><tbody>' + byKind.map(([k, fs]) => {
+    const {adds, dels} = sumLines(fs);
+    return `<tr><td>${KIND_LABEL[k]}</td><td>${filesLabel(fs.length)}</td>` +
+      `<td class="adds">${adds ? '+' + cell(adds) : ''}</td><td class="dels">${dels ? '−' + cell(dels) : ''}</td></tr>`;
+  }).join('') + '</tbody></table>' : '';
+  $('#totals').classList.toggle('has-kinds', split);
+  $('#totals').title = split ? '' : 'Total lines changed in this view';
+  $('#totals').innerHTML = `<span class="total">${filesLabel(files.length)}${linesHtml(sumLines(files))}</span>${kinds}`;
 }
 
 function fileHtml(f, i) {
