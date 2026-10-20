@@ -40,8 +40,12 @@
            height: 52px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
   header h1 { font-size: 15px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: -.01em;
               min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [hidden] { display: none !important; }
   header > * { flex-shrink: 0; }
-  header > h1, header > #stack-wrap { flex-shrink: 1; }
+  header > h1, header > #stack-wrap, header > #counts { flex-shrink: 1; }
+  header > #counts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Narrower windows drop the per-kind totals line so the controls and Submit still fit. */
+  @media (max-width: 1600px) { #totals .split { display: none; } }
   #stack-wrap { min-width: 0; }
   #stack-branch { min-width: 140px; max-width: 420px; width: 100%; text-overflow: ellipsis; }
   header .spacer { flex: 1; }
@@ -62,7 +66,7 @@
             border-bottom: 1px solid var(--border); }
   #banner.show { display: flex; gap: 12px; align-items: center; }
   #layout { display: flex; align-items: flex-start; }
-  aside { position: sticky; top: 52px; width: 300px; flex-shrink: 0; max-height: calc(100vh - 52px); overflow: auto;
+  aside { position: sticky; top: 52px; width: var(--files-w, 300px); flex-shrink: 0; max-height: calc(100vh - 52px); overflow: auto;
           padding: 16px 8px 16px 16px; font-size: 13px; }
   aside a { display: flex; gap: 8px; padding: 3px 8px; border-radius: 6px; color: var(--fg-soft); text-decoration: none;
             align-items: center; line-height: 1.5; }
@@ -82,7 +86,13 @@
   aside .tools .spacer { flex: 1; }
   aside .tools button { font-size: 12px; color: var(--muted); }
   aside a.current, aside .dir.current { background: var(--panel); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
-  body.no-files aside { display: none; }
+  body.no-files aside, body.no-files #files-resizer { display: none; }
+  /* Drag to resize the file list; double-click to reset. The width is remembered across repos. */
+  #files-resizer { position: sticky; top: 52px; flex-shrink: 0; width: 7px; margin: 0 -3px; height: calc(100vh - 52px);
+                   cursor: col-resize; z-index: 1; }
+  #files-resizer::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: transparent; }
+  #files-resizer:hover::after, body.resizing #files-resizer::after { background: var(--accent); }
+  body.resizing { cursor: col-resize; user-select: none; }
   body.no-files main { padding-left: 20px; }
   #toggle-files { padding: 2px 8px; font-size: 15px; line-height: 1.2; color: var(--muted); }
   .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
@@ -134,6 +144,12 @@
   td.code { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 16px 0 26px; position: relative;
             line-height: 22px; tab-size: 4; color: var(--fg); }
   tr.add td.code { background: var(--add-bg); } tr.add td.num { background: var(--add-num); }
+  /* Side by side: each cell carries its own side's add/del colour; a side with no line is blank. */
+  table.sbs td.code.add { background: var(--add-bg); } table.sbs td.num.add { background: var(--add-num); }
+  table.sbs td.code.del { background: var(--del-bg); } table.sbs td.num.del { background: var(--del-num); }
+  table.sbs td.code.add .sign { color: var(--add-sign); } table.sbs td.code.del .sign { color: var(--del-sign); }
+  table.sbs td.blank { background: var(--panel); }
+  table.sbs td.num.new { border-left: 1px solid var(--divider); }
   tr.del td.code { background: var(--del-bg); } tr.del td.num { background: var(--del-num); }
   tr.hunk td { background: var(--hunk-bg); color: var(--hunk-fg); padding: 4px 12px; line-height: 20px; font-size: 12px; }
   .sign { position: absolute; left: 10px; color: var(--faint); user-select: none; }
@@ -210,6 +226,7 @@
     </select>
   </label>
   <label class="hint" title="Hide changes that only add or remove whitespace (git diff -w)"><input type="checkbox" id="ws"> Hide whitespace</label>
+  <label class="hint" title="Old and new side by side instead of one column (s)"><input type="checkbox" id="sbs"> Side by side</label>
   <button id="refresh" title="Re-read the working tree (r)">Refresh</button>
   <span class="spacer"></span>
   <span id="totals" title="Total lines changed in this view"></span>
@@ -219,6 +236,7 @@
 <div id="banner"><span id="banner-text"></span><button id="banner-reload">Reload diff</button><button id="banner-close" class="link">Dismiss</button></div>
 <div id="layout">
   <aside id="files"></aside>
+  <div id="files-resizer" title="Drag to resize · double-click to reset"></div>
   <main>
     <div id="loading">Loading…</div>
     <div id="content" hidden>
@@ -285,6 +303,35 @@ const key = k => `lr:${meta.root}:${k}`;
 const pref = (k, d) => localStorage.getItem(key(k)) ?? d;
 const setPref = (k, v) => localStorage.setItem(key(k), v);
 
+// File list width: global (not per repo), so it carries over between reviews.
+const FILES_W_KEY = 'lr:files-width';
+function setFilesWidth(px) {
+  if (px == null) { document.documentElement.style.removeProperty('--files-w'); return; }
+  const w = Math.round(Math.min(Math.max(px, 180), window.innerWidth * 0.6));
+  document.documentElement.style.setProperty('--files-w', `${w}px`);
+  return w;
+}
+setFilesWidth(+localStorage.getItem(FILES_W_KEY) || null);
+{
+  const handle = document.getElementById('files-resizer');
+  handle.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const left = document.getElementById('files').getBoundingClientRect().left;
+    const move = ev => setFilesWidth(ev.clientX - left);
+    const up = ev => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      localStorage.setItem(FILES_W_KEY, setFilesWidth(ev.clientX - left));
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+  });
+  handle.addEventListener('dblclick', () => { localStorage.removeItem(FILES_W_KEY); setFilesWidth(null); });
+}
+
 async function init() {
   meta = await api('/api/meta');
   document.title = `review · ${meta.name}`;
@@ -306,6 +353,8 @@ async function init() {
   $('#context').value = pref('context', '3');
   $('#ws').checked = pref('ws', '0') === '1';
   $('#ws').onchange = () => { setPref('ws', $('#ws').checked ? '1' : '0'); wsOverride.clear(); loadDiff(); };
+  $('#sbs').checked = sideBySide();
+  $('#sbs').onchange = () => setSideBySide($('#sbs').checked);
   $('#mode').onchange = () => { setPref('mode', $('#mode').value); loadDiff(); };
   $('#base').onchange = () => { setPref('base', $('#base').value.trim()); loadDiff(); };
   $('#context').onchange = () => { setPref('context', $('#context').value); loadDiff(); };
@@ -336,6 +385,7 @@ async function init() {
     } else if (!['TEXTAREA', 'INPUT', 'SELECT'].includes(e.target.tagName) && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.key === 'r') loadDiff();
       else if (e.key === 'f') toggleFiles();
+      else if (e.key === 's') setSideBySide(!sideBySide());
     }
   });
   await loadComments();
@@ -356,7 +406,7 @@ async function loadDiff() {
   $('#loading').textContent = 'Loading…';
   try {
     view = await api(`/api/diff?${q}`);
-    view.files = [...view.files.filter(f => !f.test), ...view.files.filter(f => f.test)];
+    view.files = KIND_ORDER.flatMap(k => view.files.filter(f => kindOf(f) === k));
   } catch (e) {
     $('#loading').innerHTML = `<span class="err">${esc(e.message)}</span>`;
     $('#content').hidden = true;
@@ -479,9 +529,9 @@ function renderDiff() {
   $('#viewmeta').innerHTML = `${esc(view.label)} · ${files.length} file${files.length === 1 ? '' : 's'}` +
     (view.mode === 'branch' ? ` · <details><summary style="display:inline;cursor:pointer">${c} commit${c === 1 ? '' : 's'}</summary>` +
       `<pre class="ctx">${esc(view.commits.join('\n') || '(no commits; uncommitted changes only)')}</pre></details>` : '');
-  const split = hasBothKinds();
+  const split = isSplit();
   $('#diff').innerHTML = files.length
-    ? files.map((f, i) => (split && (i === 0 || f.test !== files[i - 1].test)
+    ? files.map((f, i) => (split && (i === 0 || kindOf(f) !== kindOf(files[i - 1]))
         ? `<div class="group-head" data-kind="${kindOf(f)}"></div>` : '') + fileHtml(f, i)).join('')
     : '<div class="note">No changes in this view.</div>';
   files.forEach((f, i) => {
@@ -491,15 +541,21 @@ function renderDiff() {
   applyKindFilter();
 }
 
-// ------------------------------------------------------------------------------ code vs. tests
+// ------------------------------------------------------------------------- code, tests, resources, project
 
-// The server guesses which files are tests from their paths (see test_classifier); this splits the
-// page, the totals and the tree into code and tests, and filters to one or the other.
-const KIND_LABEL = {code: 'Code', tests: 'Tests'};
-function kindOf(f) { return f.test ? 'tests' : 'code'; }
-function hasBothKinds() { return view.files.some(f => f.test) && view.files.some(f => !f.test); }
-// 'all', 'code' or 'tests'; only applies when the view has both.
-function kindFilter() { return hasBothKinds() ? pref('kind', 'all') : 'all'; }
+// The server guesses each file's kind from its path (see kind_classifier); this splits the page, the
+// totals and the tree by kind, and filters to one.
+const KIND_ORDER = ['code', 'tests', 'resources', 'project'];
+const KIND_LABEL = {code: 'Code', tests: 'Tests', resources: 'Resources', project: 'Project'};
+const KIND_TAG = {tests: 'test', resources: 'resource', project: 'project'};
+function kindOf(f) { return f.kind || (f.test ? 'tests' : 'code'); }
+function kindsPresent() { return KIND_ORDER.filter(k => view.files.some(f => kindOf(f) === k)); }
+function isSplit() { return kindsPresent().length > 1; }
+// 'all' or a kind; only applies when the view has more than one kind.
+function kindFilter() {
+  const k = pref('kind', 'all');
+  return isSplit() && kindsPresent().includes(k) ? k : 'all';
+}
 function shownByFilter(f) { const k = kindFilter(); return k === 'all' || k === kindOf(f); }
 
 function sumLines(files) {
@@ -525,15 +581,15 @@ function applyKindFilter() {
 }
 
 // Sums the files on the page, so it follows the view, the filter, the whitespace toggles and
-// per-file overrides. With both kinds showing it also says how much of that is tests.
+// per-file overrides. With more than one kind showing it also breaks that down by kind.
 function renderTotals() {
   const files = view.files.filter(shownByFilter);
   if (!files.length) { $('#totals').innerHTML = ''; return; }
-  const tests = files.filter(f => f.test), code = files.filter(f => !f.test);
   // "+184 −10", leaving out a side that's zero.
   const brief = ({adds, dels}) => [adds && `+${adds.toLocaleString()}`, dels && `−${dels.toLocaleString()}`].filter(Boolean).join(' ') || '0';
-  const split = tests.length && code.length
-    ? `<span class="split">code ${brief(sumLines(code))} · tests ${brief(sumLines(tests))}</span>` : '';
+  const byKind = KIND_ORDER.map(k => [k, files.filter(f => kindOf(f) === k)]).filter(([, fs]) => fs.length);
+  const split = byKind.length > 1
+    ? `<span class="split">${byKind.map(([k, fs]) => `${k} ${brief(sumLines(fs))}`).join(' · ')}</span>` : '';
   $('#totals').innerHTML = `<span class="total">${filesLabel(files.length)}${linesHtml(sumLines(files))}</span>${split}`;
 }
 
@@ -543,7 +599,7 @@ function fileHtml(f, i) {
     <div class="fhead">
       <button class="toggle" data-act="toggle-file" title="Collapse">▾</button>
       <span class="st ${f.status}">${f.status[0].toUpperCase()}</span>
-      ${f.test ? '<span class="tag" title="Guessed from the path; override with git config local-review.tests / local-review.notTests">test</span>' : ''}
+      ${KIND_TAG[kindOf(f)] ? `<span class="tag" title="Guessed from the path; override with git config local-review.code / tests / notTests / resources / project">${KIND_TAG[kindOf(f)]}</span>` : ''}
       <span class="path">${path}</span>
       <span class="adds">+${f.additions}</span><span class="dels">−${f.deletions}</span>
       <button class="link" data-act="toggle-ws" title="Only for this file; the header checkbox sets the default">${ignoresWs(f) ? 'Show whitespace' : 'Hide whitespace'}</button>
@@ -569,6 +625,7 @@ function fillBody(i) {
     el.innerHTML = `<div class="note">${note}</div>`;
     return;
   }
+  if (sideBySide()) { fillSideBySide(f, el); return; }
   const rows = [];
   const oldLang = langFor(f.old_path), newLang = langFor(f.new_path);
   for (const h of f.hunks) {
@@ -591,21 +648,76 @@ function fillBody(i) {
   el.innerHTML = `<table class="diff"><colgroup><col class="num"><col class="num"><col></colgroup><tbody>${rows.join('')}</tbody></table>`;
 }
 
+// ------------------------------------------------------------------------- side by side
+
+// Global, like the file list width: a way of reading diffs, not a per-repo setting.
+const SBS_KEY = 'lr:side-by-side';
+function sideBySide() { return localStorage.getItem(SBS_KEY) === '1'; }
+
+function setSideBySide(on) {
+  if (on) localStorage.setItem(SBS_KEY, '1'); else localStorage.removeItem(SBS_KEY);
+  $('#sbs').checked = on;
+  for (const el of $$('#diff .rows[data-filled]')) {
+    delete el.dataset.filled;
+    fillBody(+el.closest('.file').dataset.i);
+  }
+  renderComments();
+}
+
+// Old on the left, new on the right. Context lines fill both sides; within a change, deletions and
+// additions pair up row by row, and a side with nothing left goes blank. A row keeps the same
+// data-o / data-n as in one column, so comment anchoring, ranges and selection work unchanged; the
+// side being commented on comes from which half's + button was pressed.
+function fillSideBySide(f, el) {
+  const rows = [];
+  const oldLang = langFor(f.old_path), newLang = langFor(f.new_path);
+  const half = (side, l, code) => {
+    if (!l) return '<td class="num blank"></td><td class="code blank"></td>';
+    const t = l.t === 'ctx' ? '' : l.t, sign = l.t === 'add' ? '+' : l.t === 'del' ? '-' : ' ';
+    return `<td class="num ${side} ${t}">${(side === 'old' ? l.o : l.n) ?? ''}</td>` +
+      `<td class="code ${t}"><button class="addc" data-act="line-comment" data-side="${side}" title="Comment">+</button>` +
+      `<span class="sign">${sign}</span>${code}</td>`;
+  };
+  const row = (o, n, oCode, nCode) => {
+    const kind = o && n && o === n ? 'ctx' : 'change';
+    rows.push(`<tr class="ln ${kind}" data-side="${n ? 'new' : 'old'}" data-o="${o?.o ?? ''}" data-n="${n?.n ?? ''}">` +
+      half('old', o, oCode) + half('new', n, nCode) + '</tr>');
+  };
+  for (const h of f.hunks) {
+    rows.push(`<tr class="hunk"><td colspan="4">${esc(h.header)}</td></tr>`);
+    const oldHtml = highlightLines(h.lines.filter(l => l.t !== 'add').map(l => l.s), oldLang);
+    const newHtml = highlightLines(h.lines.filter(l => l.t !== 'del').map(l => l.s), newLang);
+    let oi = 0, ni = 0;
+    for (let k = 0; k < h.lines.length;) {
+      const l = h.lines[k];
+      if (l.t !== 'add' && l.t !== 'del') { row(l, l, oldHtml[oi++], newHtml[ni++]); k++; continue; }
+      const dels = [], adds = [];
+      while (k < h.lines.length && h.lines[k].t === 'del') dels.push(h.lines[k++]);
+      while (k < h.lines.length && h.lines[k].t === 'add') adds.push(h.lines[k++]);
+      for (let j = 0; j < Math.max(dels.length, adds.length); j++) {
+        row(dels[j], adds[j], dels[j] ? oldHtml[oi++] : '', adds[j] ? newHtml[ni++] : '');
+      }
+    }
+  }
+  el.innerHTML = '<table class="diff sbs" data-cols="4"><colgroup><col class="num"><col><col class="num"><col></colgroup>' +
+    `<tbody>${rows.join('')}</tbody></table>`;
+}
+
 function isViewed(f) { return pref(`viewed:${f.path}`, '') === f.hash; }
 
 function renderFileList() {
   const counts = {};
   for (const c of comments) if (c.file && ['draft', 'open', 'replied', 'addressed'].includes(c.status)) counts[c.file] = (counts[c.file] || 0) + 1;
   const entries = view.files.map((f, i) => ({f, i})).filter(e => shownByFilter(e.f));
-  // With code and tests both showing, each gets its own tree under a heading.
-  const groups = kindFilter() === 'all' && hasBothKinds()
-    ? ['code', 'tests'].map(k => ({kind: k, entries: entries.filter(e => kindOf(e.f) === k)}))
+  // With more than one kind showing, each gets its own tree under a heading.
+  const groups = kindFilter() === 'all' && isSplit()
+    ? kindsPresent().map(k => ({kind: k, entries: entries.filter(e => kindOf(e.f) === k)}))
     : [{kind: null, entries}];
   const trees = groups.map(g => ({...g, tree: fileTree(g.entries, g.kind || kindFilter())}));
   const hasDirs = trees.some(t => t.tree.kids.some(k => k.kids));
   const k = kindFilter();
-  const filter = hasBothKinds() ? `<div class="kind-filter"><div class="seg" role="group" aria-label="Show">` +
-    ['all', 'code', 'tests'].map(x => {
+  const filter = isSplit() ? `<div class="kind-filter"><div class="seg" role="group" aria-label="Show">` +
+    ['all', ...kindsPresent()].map(x => {
       const n = x === 'all' ? view.files.length : view.files.filter(f => kindOf(f) === x).length;
       return `<button data-act="kind" data-kind="${x}" class="${x === k ? 'on' : ''}">${x === 'all' ? 'All' : KIND_LABEL[x]} ${n}</button>`;
     }).join('') + '</div></div>' : '';
@@ -667,7 +779,7 @@ function markCurrentFile() {
 
 // Folders keep the order git lists the files in. A folder whose only child is another folder is
 // merged into it ("app/src/main/java/..."), so deep package paths take one row instead of ten.
-// `group` keeps a folder's collapsed state separate per tree, since code and tests share roots.
+// `group` keeps a folder's collapsed state separate per tree, since the kinds share roots.
 function fileTree(entries, group) {
   const root = {kids: []};
   entries.forEach(({f, i}) => {
@@ -766,7 +878,7 @@ function threadContainer(row) {
   if (!next || !next.classList.contains('thread-row')) {
     next = document.createElement('tr');
     next.className = 'thread-row';
-    next.innerHTML = '<td colspan="3"></td>';
+    next.innerHTML = `<td colspan="${row.closest('table').dataset.cols || 3}"></td>`;
     row.after(next);
   }
   return next.firstElementChild;
@@ -871,7 +983,7 @@ function onLineMouseDown(e) {
   if (!btn || e.button !== 0) return;
   e.preventDefault();
   const row = btn.closest('tr'), sec = row.closest('.file');
-  const i = +sec.dataset.i, side = row.dataset.side, line = lineOn(row, side);
+  const i = +sec.dataset.i, side = btn.dataset.side || row.dataset.side, line = lineOn(row, side);
   const extend = e.shiftKey && lastLine && lastLine.i === i && lastLine.side === side;
   drag = {i, side, start: extend ? lastLine.line : line, end: line};
   document.body.classList.add('dragging');
@@ -949,8 +1061,8 @@ async function onClick(e) {
     } else if (act === 'line-comment') {
       // A mouse press already opened the form (see onLineMouseUp); this path is for the keyboard.
       if (e.detail) return;
-      const row = btn.closest('tr');
-      openLineForm(+file.dataset.i, row.dataset.side, +row.dataset.line, +row.dataset.line);
+      const row = btn.closest('tr'), side = btn.dataset.side || row.dataset.side, line = lineOn(row, side);
+      openLineForm(+file.dataset.i, side, line, line);
     } else if (act === 'file-comment') {
       // File-level comments anchor to line 1 of the new file.
       file.classList.remove('collapsed');

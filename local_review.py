@@ -240,45 +240,85 @@ def parse_diff(text):
     return files
 
 
-# ------------------------------------------------------------------------------------------- tests
+# ------------------------------------------------------------------------------------------- kinds
 
 # Folders whose contents are tests: common test roots plus Gradle/Android test source sets
 # (src/test, src/androidTest, src/testProdDebug, src/sharedTest, src/testFixtures, ...).
-TEST_DIR = re.compile(r"^(tests?|__tests__|specs?|e2e|androidTest\w*|sharedTest\w*|testFixtures\w*|test[A-Z]\w*)$")
+TEST_DIR = re.compile(r"^(tests?|__tests__|specs?|e2e|androidTest\w*|sharedTest\w*|testFixtures\w*|test[A-Z]\w*|\w+Test)$")
 # Test file names for languages where tests can sit next to the code they cover.
 TEST_FILE = re.compile(
     r"(\w(Tests?|Spec)\.(kt|kts|java|scala|groovy|swift|m|cs)"  # FooTest.kt, FooTests.swift, FooSpec.groovy
     r"|^test_.+\.\w+|_test\.(py|go|rb|exs?|dart|c|cc|cpp|rs)|_spec\.rb"  # test_foo.py, foo_test.go, foo_spec.rb
     r"|\.(test|spec)\.[cm]?[jt]sx?|^conftest\.py)$")  # foo.test.ts, foo.spec.js
 
+# Project files: how the code is built, configured, linted and shipped, rather than the code itself.
+PROJECT_DIR = re.compile(r"^(\.github|\.circleci|\.buildkite|\.husky|\.devcontainer|build-logic|buildSrc|gradle|fastlane"
+                         r"|\w+\.xcodeproj|\w+\.xcworkspace|xcshareddata|nativeInterop)$")
+PROJECT_FILE = re.compile(
+    r"^(.+\.gradle(\.kts)?|gradle\.properties|gradlew(\.bat)?|gradle-wrapper\.properties|.+\.versions\.toml"
+    r"|Package\.swift|Package\.resolved|Podfile(\.lock)?|.+\.podspec|Cartfile(\.resolved)?|Gemfile(\.lock)?|Fastfile|Appfile"
+    r"|Makefile|CMakeLists\.txt|Dockerfile|docker-compose.*\.ya?ml|\.gitlab-ci\.yml|Jenkinsfile|Procfile"
+    r"|package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|tsconfig.*\.json|\.npmrc|\.nvmrc"
+    r"|pyproject\.toml|setup\.(py|cfg)|requirements.*\.txt|Pipfile(\.lock)?|poetry\.lock|uv\.lock|tox\.ini|\.python-version"
+    r"|go\.(mod|sum)|Cargo\.(toml|lock)|mise\.toml|\.tool-versions"
+    r"|\.git(ignore|attributes|modules)|\.editorconfig|\.(swiftlint|swiftformat|detekt|ktlint|eslintrc|prettierrc)\S*|detekt.*\.ya?ml|lint\.xml"
+    r"|.+\.(pbxproj|xcscheme|xcconfig|xcworkspacedata|xctestplan|entitlements|pro|def)|AndroidManifest\.xml|stack\.conf)$")
 
-def test_classifier(repo):
-    """Returns path -> bool: is this a test file? Guessed from the path, with per-repo overrides
-    (globs matched against the whole path, or the file name when the glob has no "/"):
+# Resources: assets and content the code loads, rather than code.
+RESOURCE_DIR = re.compile(r"^(res|resources|assets|fonts|\w+\.xcassets|\w+\.lproj)$")
+# Source code stays code even in a resource folder (a `resources` package, say).
+SOURCE_FILE = re.compile(r"\.(kt|kts|java|scala|groovy|swift|mm?|h|c|cc|cpp|go|rs|py|rb|cs|dart)$")
+RESOURCE_FILE = re.compile(
+    r"\.(png|jpe?g|gif|webp|svg|ico|heic|pdf|ttf|otf|woff2?|mp3|wav|m4a|mp4|mov|lottie|riv"
+    r"|strings|stringsdict|xcstrings|xib|storyboard|plist|po|arb)$", re.I)
+
+KINDS = ("code", "tests", "resources", "project")
+
+
+def kind_classifier(repo):
+    """Returns path -> "code", "tests", "resources" or "project", guessed from the path, with per-repo
+    overrides (globs matched against the whole path, or the file name when the glob has no "/"):
 
         git config --add local-review.tests '*PreviewData.kt'
         git config --add local-review.notTests 'app/src/testing/RealThing.kt'
+        git config --add local-review.project 'scripts/*'
+        git config --add local-review.resources '*.json'
+        git config --add local-review.code 'app/src/main/res/raw/rules.js'
 
-    notTests wins over tests, and both win over the guess."""
+    Overrides win over the guess, in that order: code, notTests, tests, project, resources. notTests only
+    stops a file being a test; it's then guessed as one of the others. Tests win over resources and
+    project files among the guesses, so a test's fixtures stay with the tests."""
     def globs(key):
         out = repo.g("config", "--get-all", key, check=False)
         return [g for line in out.split("\n") for g in line.split()]
-    tests, not_tests = globs("local-review.tests"), globs("local-review.notTests")
+    over = {k: globs(f"local-review.{k}") for k in ("code", "notTests", "tests", "project", "resources")}
 
     def matches(path, pats):
         name = path.rsplit("/", 1)[-1]
         return any(fnmatch.fnmatchcase(path if "/" in p else name, p) for p in pats)
 
-    def is_test(path):
-        if not path:
-            return False
-        if matches(path, not_tests):
-            return False
-        if matches(path, tests):
-            return True
+    def kind(path):
+        if not path or matches(path, over["code"]):
+            return "code"
+        not_test = matches(path, over["notTests"])
+        for k in ("tests", "project", "resources"):
+            if matches(path, over[k]) and not (k == "tests" and not_test):
+                return k
         *dirs, name = path.split("/")
-        return any(TEST_DIR.match(d) for d in dirs) or bool(TEST_FILE.search(name))
-    return is_test
+        if not not_test and (any(TEST_DIR.match(d) for d in dirs) or TEST_FILE.search(name)):
+            return "tests"
+        if any(PROJECT_DIR.match(d) for d in dirs) or PROJECT_FILE.match(name):
+            return "project"
+        if (any(RESOURCE_DIR.match(d) for d in dirs) and not SOURCE_FILE.search(name)) or RESOURCE_FILE.search(name):
+            return "resources"
+        return "code"
+    return kind
+
+
+def test_classifier(repo):
+    """Returns path -> bool: is this a test file? See kind_classifier."""
+    kind = kind_classifier(repo)
+    return lambda path: kind(path) == "tests"
 
 
 # ------------------------------------------------------------------------------------------- stack
@@ -392,9 +432,10 @@ def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=F
         log = repo.g("log", "--format=%h %s", f"{old}..{tip}")
         commits = [ln for ln in log.split("\n") if ln]
     files = parse_diff(text)
-    is_test = test_classifier(repo)
+    kind = kind_classifier(repo)
     for f in files:
-        f["test"] = is_test(f["path"])
+        f["kind"] = kind(f["path"])
+        f["test"] = f["kind"] == "tests"
     return {"mode": mode, "base": base, "branch": branch if mode == "stack" else None, "old_rev": old,
             "new_tree": new_tree, "label": label, "commits": commits, "files": files}
 
@@ -887,9 +928,10 @@ def cmd_list(repo, args):
     if any(c.get("branch") for c in sel):
         print("Comments marked [branch] belong to that stack branch: check it out to change it, then rebase\n"
               "the branches stacked above it.\n")
-    is_test = test_classifier(repo)
+    kind_of = kind_classifier(repo)
+    labels = {"tests": " · test", "project": " · project", "resources": " · resource"}
     for c in sel:
-        kind = " · test" if is_test(c.get("file")) else ""
+        kind = labels.get(kind_of(c.get("file")), "")
         print(f"## {c['id']} · {c['status']} · {location(c)}{kind}\n")
         if c.get("file"):
             print("```")
