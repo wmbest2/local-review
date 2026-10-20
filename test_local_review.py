@@ -174,6 +174,30 @@ class LocalReviewTest(unittest.TestCase):
         self.assertEqual(files["build.gradle.kts"]["kind"], "project")
         self.assertEqual(files["Foo.kt"]["kind"], "code")
 
+    def test_classifies_typical_kotlin_python_and_swift_layouts(self):
+        kind = lr.kind_classifier(self.repo)
+        expected = {
+            "project": [
+                # Kotlin / Android
+                "local.properties", "app/google-services.json", "app/lint-baseline.xml", "app/src/main/baseline-prof.txt",
+                "config/scripts/pre-commit",
+                # Python
+                ".pre-commit-config.yaml", "ruff.toml", ".flake8", "mypy.ini", "pytest.ini", "noxfile.py", "MANIFEST.in",
+                # Swift / iOS
+                "App/Info.plist", "App/GoogleService-Info.plist", "App/PrivacyInfo.xcprivacy", ".xcode-version",
+                "ci_scripts/ci_post_clone.sh", "My App.xcodeproj/project.pbxproj"],
+            "resources": [
+                "pkg/templates/index.html", "pkg/static/app.css", "pkg/data/words.txt",
+                "App/Resources/data.json", "App/Preview Content/Preview Assets.xcassets/Contents.json",
+                "App/Sounds/ding.caf", "App/Settings.plist"],
+            "tests": ["AppUITests/Flow.swift", "AppTests/Helpers.swift", "tests/conftest.py", "pkg/mod_test.py"],
+            "code": ["pkg/data/loader.py", "app/src/main/java/com/x/data/Repository.kt", "App/Resources/Theme.swift",
+                     "pkg/templates/__init__.py", "alembic/versions/1_add.py"],
+        }
+        for k, paths in expected.items():
+            for path in paths:
+                self.assertEqual(kind(path), k, path)
+
     def test_watch_once(self):
         lr.add_comment(self.repo, {"file": "Foo.kt", "side": "new", "line": 6, "body": "x"})
         out = io.StringIO()
