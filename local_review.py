@@ -244,7 +244,7 @@ def parse_diff(text):
 
 # Folders whose contents are tests: common test roots plus Gradle/Android test source sets
 # (src/test, src/androidTest, src/testProdDebug, src/sharedTest, src/testFixtures, ...).
-TEST_DIR = re.compile(r"^(tests?|__tests__|specs?|e2e|androidTest\w*|sharedTest\w*|testFixtures\w*|test[A-Z]\w*|\w+Test)$")
+TEST_DIR = re.compile(r"^(tests?|__tests__|specs?|e2e|androidTest\w*|sharedTest\w*|testFixtures\w*|test[A-Z]\w*|\w+Tests?)$")
 # Test file names for languages where tests can sit next to the code they cover.
 TEST_FILE = re.compile(
     r"(\w(Tests?|Spec)\.(kt|kts|java|scala|groovy|swift|m|cs)"  # FooTest.kt, FooTests.swift, FooSpec.groovy
@@ -253,23 +253,26 @@ TEST_FILE = re.compile(
 
 # Project files: how the code is built, configured, linted and shipped, rather than the code itself.
 PROJECT_DIR = re.compile(r"^(\.github|\.circleci|\.buildkite|\.husky|\.devcontainer|build-logic|buildSrc|gradle|fastlane"
-                         r"|\w+\.xcodeproj|\w+\.xcworkspace|xcshareddata|nativeInterop)$")
+                         r"|[^/]+\.xcodeproj|[^/]+\.xcworkspace|xcshareddata|nativeInterop|ci_scripts|scripts|\.githooks)$")
 PROJECT_FILE = re.compile(
     r"^(.+\.gradle(\.kts)?|gradle\.properties|gradlew(\.bat)?|gradle-wrapper\.properties|.+\.versions\.toml"
     r"|Package\.swift|Package\.resolved|Podfile(\.lock)?|.+\.podspec|Cartfile(\.resolved)?|Gemfile(\.lock)?|Fastfile|Appfile"
     r"|Makefile|CMakeLists\.txt|Dockerfile|docker-compose.*\.ya?ml|\.gitlab-ci\.yml|Jenkinsfile|Procfile"
     r"|package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|tsconfig.*\.json|\.npmrc|\.nvmrc"
     r"|pyproject\.toml|setup\.(py|cfg)|requirements.*\.txt|Pipfile(\.lock)?|poetry\.lock|uv\.lock|tox\.ini|\.python-version"
-    r"|go\.(mod|sum)|Cargo\.(toml|lock)|mise\.toml|\.tool-versions"
-    r"|\.git(ignore|attributes|modules)|\.editorconfig|\.(swiftlint|swiftformat|detekt|ktlint|eslintrc|prettierrc)\S*|detekt.*\.ya?ml|lint\.xml"
+    r"|\.pre-commit-config\.yaml|\.?ruff\.toml|\.flake8|\.pylintrc|\.coveragerc|mypy\.ini|pytest\.ini|noxfile\.py|MANIFEST\.in"
+    r"|go\.(mod|sum)|Cargo\.(toml|lock)|mise\.toml|\.tool-versions|\.xcode-version|local\.properties|google-services\.json"
+    r"|(.+-)?Info\.plist|.+\.xcprivacy|baseline-prof\.txt|proguard.*\.txt"
+    r"|\.git(ignore|attributes|modules)|\.editorconfig|\.(swiftlint|swiftformat|detekt|ktlint|eslintrc|prettierrc)\S*|detekt.*\.ya?ml|lint(-baseline)?\.xml"
     r"|.+\.(pbxproj|xcscheme|xcconfig|xcworkspacedata|xctestplan|entitlements|pro|def)|AndroidManifest\.xml|stack\.conf)$")
 
 # Resources: assets and content the code loads, rather than code.
-RESOURCE_DIR = re.compile(r"^(res|resources|assets|fonts|\w+\.xcassets|\w+\.lproj)$")
+RESOURCE_DIR = re.compile(r"^(res|resources|assets|fonts|images|sounds|media|static|templates|data|locales?|i18n|l10n"
+                          r"|Preview Content|[^/]+\.xcassets|[^/]+\.lproj)$", re.I)
 # Source code stays code even in a resource folder (a `resources` package, say).
 SOURCE_FILE = re.compile(r"\.(kt|kts|java|scala|groovy|swift|mm?|h|c|cc|cpp|go|rs|py|rb|cs|dart)$")
 RESOURCE_FILE = re.compile(
-    r"\.(png|jpe?g|gif|webp|svg|ico|heic|pdf|ttf|otf|woff2?|mp3|wav|m4a|mp4|mov|lottie|riv"
+    r"\.(png|jpe?g|gif|webp|svg|ico|heic|pdf|ttf|otf|woff2?|mp3|wav|m4a|caf|aiff?|mp4|mov|lottie|riv"
     r"|strings|stringsdict|xcstrings|xib|storyboard|plist|po|arb)$", re.I)
 
 KINDS = ("code", "tests", "resources", "project")
