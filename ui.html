@@ -44,8 +44,6 @@
   header > * { flex-shrink: 0; }
   header > h1, header > #stack-wrap, header > #counts { flex-shrink: 1; }
   header > #counts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Narrower windows drop the per-kind totals line so the controls and Submit still fit. */
-  @media (max-width: 1600px) { #totals .split { display: none; } }
   #stack-wrap { min-width: 0; }
   #stack-branch { min-width: 140px; max-width: 420px; width: 100%; text-overflow: ellipsis; }
   header .spacer { flex: 1; }
@@ -131,7 +129,6 @@
             line-height: 1.35; color: var(--muted); white-space: nowrap; }
   #totals .total { display: flex; gap: 6px; align-items: baseline; }
   /* The breakdown is secondary: smaller and uncoloured, so the total stays the thing you read. */
-  #totals .split { font-size: 11px; color: var(--faint); font-family: var(--mono); }
   .adds, .dels { font-family: var(--mono); font-size: 12px; font-weight: 600; }
   .adds { color: var(--add-sign); } .dels { color: var(--del-sign); }
   .file.collapsed .fbody { display: none; }
@@ -588,9 +585,10 @@ function renderTotals() {
   // "+184 −10", leaving out a side that's zero.
   const brief = ({adds, dels}) => [adds && `+${adds.toLocaleString()}`, dels && `−${dels.toLocaleString()}`].filter(Boolean).join(' ') || '0';
   const byKind = KIND_ORDER.map(k => [k, files.filter(f => kindOf(f) === k)]).filter(([, fs]) => fs.length);
-  const split = byKind.length > 1
-    ? `<span class="split">${byKind.map(([k, fs]) => `${k} ${brief(sumLines(fs))}`).join(' · ')}</span>` : '';
-  $('#totals').innerHTML = `<span class="total">${filesLabel(files.length)}${linesHtml(sumLines(files))}</span>${split}`;
+  // The per-kind split is in the sidebar's headings; here it's only a tooltip, to keep the header to one line.
+  $('#totals').title = ['Total lines changed in this view',
+    ...(byKind.length > 1 ? byKind.map(([k, fs]) => `${KIND_LABEL[k]}: ${filesLabel(fs.length)}, ${brief(sumLines(fs))}`) : [])].join('\n');
+  $('#totals').innerHTML = `<span class="total">${filesLabel(files.length)}${linesHtml(sumLines(files))}</span>`;
 }
 
 function fileHtml(f, i) {
