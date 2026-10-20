@@ -56,7 +56,9 @@ Pick the branch from the **Branch** menu. The checked-out branch is reviewed wit
 **Hide whitespace** (header) diffs with `git diff -w`, so re-indents don't bury the real change; each file's header also has its own **Hide/Show whitespace** button that overrides it for that file. Line numbers don't change, so comments stay anchored.
 
 ### Code, tests, resources and project files
-Files are split by kind: **Code**, then **Tests**, **Resources** and **Project**, each under its own heading with its own totals in the sidebar (hover or focus the header totals for the same split). The sidebar's filter (**All / Code / Tests / Resources / Project**, showing only the kinds the view has) narrows both the tree and the diff. `local-review list` marks comments on those files with `· test`, `· resource` or `· project`.
+Files are split by kind: **Code**, then **Tests**, **Resources** and **Project**, each under its own heading with its own totals in the sidebar (hover or focus the header totals for the same split).
+
+![The header totals popover: files and lines changed per kind](docs/totals.png) The sidebar's filter (**All / Code / Tests / Resources / Project**, showing only the kinds the view has) narrows both the tree and the diff. `local-review list` marks comments on those files with `· test`, `· resource` or `· project`.
 
 Kinds are guessed from the path:
 - **Tests**: test folders (`test/`, `tests/`, `__tests__/`, `spec/`, and Gradle/Android/KMP source sets such as `src/test`, `src/androidTest`, `src/androidUnitTest`, `src/commonTest`, `src/testProdDebug`) or test file names (`FooTest.kt`, `FooTests.swift`, `test_foo.py`, `foo_test.go`, `foo.spec.ts`, ...). A test's fixtures and resources count as tests.

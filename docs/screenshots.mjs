@@ -50,22 +50,25 @@ await cdp('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme
 
 await shoot('screenshot.png', {sideBySide: false, scrollTo: calc});
 await shoot('side-by-side.png', {sideBySide: true, scrollTo: calc});
+// The header's per-kind totals popover, cropped to the top right.
+await shoot('totals.png', {sideBySide: false, focus: '#totals', clip: {x: WIDTH - 720, y: 0, width: 720, height: 170}});
 console.log('Screenshots written to', here);
 process.exit(0);
 
-async function shoot(name, {sideBySide, scrollTo}) {
+async function shoot(name, {sideBySide, scrollTo, focus, clip}) {
   await cdp('Page.navigate', {url: base});
   await waitFor(() => evaluate(`location.origin === ${JSON.stringify(base)} && document.readyState === 'complete'`));
   await evaluate(`localStorage.clear(); ${sideBySide ? "localStorage.setItem('lr:side-by-side', '1');" : ''} true`);
   await cdp('Page.navigate', {url: base});
   await waitFor(() => evaluate(`!document.querySelector('#content').hidden && document.querySelectorAll('.thread').length >= 3`));
-  await evaluate(`(() => {
+  if (scrollTo) await evaluate(`(() => {
     const file = [...document.querySelectorAll('#diff .file')].find(f => f.querySelector('.fhead')?.textContent.includes(${JSON.stringify(scrollTo.split('/').pop())}));
     window.scrollTo(0, file.getBoundingClientRect().top + scrollY - 60);
     return true;
   })()`);
+  if (focus) await evaluate(`document.querySelector(${JSON.stringify(focus)}).focus(); true`);
   await sleep(300);
-  const {data} = await cdp('Page.captureScreenshot', {format: 'png'});
+  const {data} = await cdp('Page.captureScreenshot', {format: 'png', ...(clip ? {clip: {...clip, scale: 1}} : {})});
   writeFileSync(join(here, name), Buffer.from(data, 'base64'));
 }
 
