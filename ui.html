@@ -223,6 +223,49 @@
   dialog::backdrop { background: rgba(0, 0, 0, .4); }
   #loading { padding: 48px; color: var(--muted); text-align: center; }
   .err { color: var(--danger); white-space: pre-wrap; font-size: 13px; }
+  /* Chat: a panel docked on the right, like a code host's assistant. Messages post immediately. */
+  #chat-toggle { position: relative; }
+  #chat-toggle .cnt { position: absolute; top: -6px; right: -6px; font-size: 11px; background: var(--accent); color: #fff;
+                      border-radius: 10px; padding: 0 6px; line-height: 16px; }
+  #chat { position: sticky; top: 52px; width: var(--chat-w, 420px); flex-shrink: 0; height: calc(100vh - 52px);
+          display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg); }
+  body:not(.chat-open) #chat { display: none; }
+  .chat-head { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border);
+               background: var(--panel); font-size: 13px; }
+  .chat-head strong { font-weight: 600; }
+  #chat-status { flex: 1; display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+  #chat-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  #chat-status.on .dot { background: var(--add-sign); }
+  #chat-log { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+  #chat-log .empty { color: var(--muted); font-size: 13px; margin: auto 0; text-align: center; padding: 0 12px; }
+  .cmsg { max-width: 100%; }
+  .cmsg .meta-line { display: flex; gap: 8px; align-items: baseline; font-size: 12px; margin-bottom: 2px; }
+  .cmsg .who { font-weight: 600; font-size: 13px; } .cmsg .when { color: var(--faint); }
+  .cmsg.agent .who { color: var(--draft); }
+  .cmsg.mine .bubble { background: var(--panel); border: 1px solid var(--divider); border-radius: 8px; padding: 8px 12px; }
+  .cmsg .body { overflow-wrap: anywhere; line-height: 1.6; color: var(--fg-soft); font-size: 14px; }
+  .cmsg .md ul, .cmsg .md ol { padding-left: 1.4em; }
+  .cmsg .md table { font-size: 13px; }
+  .cmsg .acts { display: flex; gap: 4px; margin-top: 2px; }
+  .cmsg .acts button { font-size: 12px; color: var(--muted); }
+  .ref-chip { display: inline-flex; gap: 1px; align-items: center; max-width: 100%; font-family: var(--mono); font-size: 11.5px;
+              border: 1px solid var(--border); border-radius: 12px; padding: 0 8px; line-height: 20px; color: var(--accent);
+              background: var(--bg); margin-bottom: 4px; }
+  .ref-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .ref-chip.outdated { color: var(--warn); }
+  button.ref-chip { cursor: pointer; font-weight: 400; }
+  .ref-chip .x { margin-left: 5px; border: none; background: none; padding: 0; color: var(--muted); font-size: 13px; line-height: 1; }
+  .suggestions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .suggestions button { text-align: left; font-weight: 400; padding: 6px 10px; border-radius: 8px; background: var(--bg);
+                        display: flex; gap: 8px; align-items: flex-start; line-height: 1.45; }
+  .suggestions button::before { content: '➤'; color: var(--muted); font-size: 11px; line-height: 1.9; }
+  .chat-working { color: var(--muted); font-size: 13px; display: flex; gap: 8px; align-items: center; }
+  .chat-working .dots::after { content: '…'; animation: dots 1.2s steps(4, end) infinite; display: inline-block; width: 1.2em;
+                               overflow: hidden; vertical-align: bottom; }
+  @keyframes dots { from { width: 0; } to { width: 1.2em; } }
+  .chat-compose { border-top: 1px solid var(--border); padding: 10px 14px 12px; background: var(--panel); }
+  .chat-compose textarea { min-height: 64px; max-height: 40vh; background: var(--bg); }
+  .chat-compose .btns { margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -252,6 +295,7 @@
   <span class="spacer"></span>
   <span id="totals" tabindex="0" title="Total lines changed in this view"></span>
   <span id="counts" class="hint"></span>
+  <button id="chat-toggle" title="Chat with the agent (c)">Chat</button>
   <button id="submit" class="primary">Submit review</button>
 </header>
 <div id="banner"><span id="banner-text"></span><button id="banner-reload">Reload diff</button><button id="banner-close" class="link">Dismiss</button></div>
@@ -262,12 +306,10 @@
     <div id="loading">Loading…</div>
     <div id="content" hidden>
       <div class="meta" id="viewmeta"></div>
-      <div class="panel" id="general">
+      <!-- General (file-less) threads from older reviews; new ones go in the chat. -->
+      <div class="panel" id="general" hidden>
         <h2>Review conversation</h2>
-        <div class="inner">
-          <div id="general-threads"></div>
-          <button id="add-general" class="link">+ Add a general comment</button>
-        </div>
+        <div class="inner"><div id="general-threads"></div></div>
       </div>
       <div class="panel" id="other" hidden>
         <h2>Comments not shown in this diff</h2>
@@ -276,11 +318,24 @@
       <div id="diff"></div>
     </div>
   </main>
+  <section id="chat" aria-label="Chat with the agent">
+    <div class="chat-head">
+      <strong>Chat</strong>
+      <span id="chat-status"><span class="dot"></span><span class="label"></span></span>
+      <button id="chat-close" class="link" title="Close (c)">✕</button>
+    </div>
+    <div id="chat-log"></div>
+    <div class="chat-compose">
+      <div id="chat-ref"></div>
+      <textarea id="chat-input" placeholder="Ask anything about these changes…"></textarea>
+      <div class="btns"><span class="hint">↩ to send · ⇧↩ new line</span>
+        <span class="err" id="chat-err"></span><button id="chat-send" class="primary">Send</button></div>
+    </div>
+  </section>
 </div>
 <dialog id="submit-dlg">
   <h3 style="margin-top:0">Submit review</h3>
   <p class="hint" id="submit-info"></p>
-  <textarea id="summary" placeholder="Optional overall summary for the agent…"></textarea>
   <div class="btns">
     <span class="err" id="submit-err"></span>
     <button id="submit-cancel">Cancel</button>
@@ -421,6 +476,7 @@ function when(iso) {
 }
 
 let meta, view, comments = [], reviews = [], version = null, pendingRender = false;
+let chat = [], chatWorking = null, watchingNow = false, chatRef = null, chatSending = false, chatShown = null;
 const unfolded = new Set();
 const key = k => `lr:${meta.root}:${k}`;
 const pref = (k, d) => localStorage.getItem(key(k)) ?? d;
@@ -487,7 +543,13 @@ async function init() {
   $('#submit').onclick = openSubmit;
   $('#submit-cancel').onclick = () => $('#submit-dlg').close();
   $('#submit-go').onclick = doSubmit;
-  $('#add-general').onclick = () => openForm($('#general-threads'), {file: null});
+  $('#chat-toggle').onclick = () => setChatOpen(!chatOpen());
+  $('#chat-close').onclick = () => setChatOpen(false);
+  $('#chat-send').onclick = () => sendChat();
+  $('#chat-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); e.stopPropagation(); sendChat(); }
+  });
+  document.body.classList.toggle('chat-open', pref('chat', '0') === '1');
   document.addEventListener('click', onClick);
   document.addEventListener('mousedown', onLineMouseDown);
   document.addEventListener('mouseover', onLineMouseOver);
@@ -509,11 +571,12 @@ async function init() {
       if (e.key === 'r') loadDiff();
       else if (e.key === 'f') toggleFiles();
       else if (e.key === 's') setSideBySide(!sideBySide());
+      else if (e.key === 'c') { e.preventDefault(); setChatOpen(!chatOpen()); }
     }
   });
   await loadComments();
   await loadDiff();
-  setInterval(poll, 3000);
+  setInterval(poll, 1000);
 }
 
 async function loadDiff() {
@@ -582,23 +645,34 @@ async function refetchFile(i) {
   renderComments();
 }
 
+// What the agent can change in a thread; a chat-only change leaves it alone, so it raises no banner.
+const threadsKey = cs => JSON.stringify(cs.map(c => [c.id, c.status, c.replies.length]));
+
 async function loadComments(fromPoll = false) {
   const j = await api('/api/comments');
-  const changed = version !== null && j.v !== version;
+  const changed = version !== null && j.v !== version && threadsKey(j.comments) !== threadsKey(comments);
   version = j.v;
   comments = j.comments;
   reviews = j.reviews;
+  chat = j.chat || [];
+  chatWorking = j.chat_working;
+  watchingNow = !!j.watching;
+  renderChat();
   if (!view) return;
   if (fromPoll && changed) showBanner('Review comments changed — the agent may have updated the code.');
   if (typingInThread()) { pendingRender = true; return; }
   renderComments();
 }
 
+// Every second: the version is the state file's mtime, so this is a stat per poll until something changes.
 async function poll() {
   try {
-    const {v} = await api('/api/version');
+    const {v, watching} = await api('/api/version');
     if (v !== version) await loadComments(true);
-    else if (pendingRender && !typingInThread()) { pendingRender = false; renderComments(); }
+    else {
+      if (!!watching !== watchingNow) { watchingNow = !!watching; renderChat(); }
+      if (pendingRender && !typingInThread()) { pendingRender = false; renderComments(); }
+    }
   } catch (e) { /* server stopped; keep the page as-is */ }
 }
 
@@ -981,6 +1055,7 @@ function renderComments() {
   const shown = comments.filter(visible);
   const general = shown.filter(c => !c.file);
   for (const c of general) $('#general-threads').appendChild(threadEl(c, false));
+  $('#general').hidden = !general.length;
   for (const c of shown.filter(c => c.file)) {
     const i = c.side === 'old' ? (c.old_rev === view.old_rev ? oldIdx[c.file] : undefined) : fileIdx[c.file];
     if (i === undefined) { $('#other-threads').appendChild(threadEl(c, true)); other++; continue; }
@@ -1067,6 +1142,7 @@ function openForm(container, target) {
   form.innerHTML = `${range}<textarea placeholder="Leave a comment for the agent…"></textarea>
     <div class="btns"><span class="hint">Saved as a draft until you submit the review · ⌘↩ to add</span>
     <span class="err"></span><button data-act="cancel-form">Cancel</button>
+    ${target.file ? '<button data-act="to-chat" title="Send this to the agent now, as a chat message about these lines">Ask in chat</button>' : ''}
     <button class="primary" data-act="save-form">Add review comment</button></div>`;
   form.target = target;
   container.appendChild(form);
@@ -1205,6 +1281,28 @@ async function onClick(e) {
       await loadComments();
     } else if (act === 'cancel-form') {
       closeForm(btn.closest('.cform'));
+    } else if (act === 'to-chat') {
+      const form = btn.closest('.cform');
+      const text = form.querySelector('textarea').value.trim();
+      chatRef = {...form.target, branch: reviewBranch()};
+      const input = $('#chat-input');
+      if (text) input.value = input.value.trim() ? `${input.value.trim()}\n\n${text}` : text;
+      closeForm(form);
+      setChatOpen(true);
+      renderChatRef();
+    } else if (act === 'chat-ref-clear') {
+      chatRef = null;
+      renderChatRef();
+    } else if (act === 'chat-jump') {
+      jumpToRef(chat.find(m => m.id === btn.dataset.id).ref);
+    } else if (act === 'chat-suggest') {
+      await sendChat(btn.dataset.text);
+    } else if (act === 'chat-to-comment') {
+      const m = chat.find(m => m.id === btn.dataset.id), r = m.ref;
+      await api('/api/comments', {file: r.file, side: r.side, line: r.current_line, old_rev: r.old_rev, body: m.body,
+        branch: r.branch || null, ...(r.current_start < r.current_line ? {start_line: r.current_start} : {})});
+      await loadComments();
+      showBanner(`Added a draft review comment on ${locLabel(r)}. It goes to the agent when you submit the review.`);
     } else if (act === 'reply') {
       const ta = thread.querySelector('.reply textarea');
       if (!ta.value.trim()) return;
@@ -1255,22 +1353,124 @@ function openSubmit() {
   const drafts = comments.filter(c => c.status === 'draft').length;
   $('#submit-info').textContent = drafts
     ? `${drafts} draft comment${drafts === 1 ? '' : 's'} will be sent to the agent.`
-    : 'No draft comments. You can still send an overall summary.';
+    : 'No draft comments to submit. To tell the agent something general, use the chat.';
   $('#submit-err').textContent = '';
+  $('#submit-go').disabled = !drafts;
   $('#submit-dlg').showModal();
-  $('#summary').focus();
 }
 
 async function doSubmit() {
   try {
-    await api('/api/submit', {summary: $('#summary').value});
-    $('#summary').value = '';
+    await api('/api/submit', {});
     $('#submit-dlg').close();
     await loadComments();
     showBanner('Review submitted. Ask your agent to run /address-review.');
   } catch (e) {
     $('#submit-err').textContent = e.message;
   }
+}
+
+// ------------------------------------------------------------------------------------------ chat
+
+function chatOpen() { return document.body.classList.contains('chat-open'); }
+
+function setChatOpen(open) {
+  document.body.classList.toggle('chat-open', open);
+  setPref('chat', open ? '1' : '0');
+  chatShown = null;
+  renderChat(true);
+  if (open) $('#chat-input').focus();
+}
+
+const agentCount = () => chat.filter(m => m.author !== 'reviewer').length;
+
+function refLabel(r) { return (r.branch && r.branch !== reviewBranch() ? `[${r.branch}] ` : '') + locLabel(r); }
+
+// Re-renders only when something in it changed, so a poll doesn't drop a text selection.
+function renderChat(toBottom = false) {
+  const unread = Math.max(0, agentCount() - +pref('chatSeen', 0));
+  if (chatOpen()) setPref('chatSeen', agentCount());
+  $('#chat-toggle').innerHTML = `Chat${!chatOpen() && unread ? `<span class="cnt">${unread}</span>` : ''}`;
+  const status = $('#chat-status');
+  status.classList.toggle('on', watchingNow || !!chatWorking);
+  status.querySelector('.label').textContent = chatWorking ? 'Agent working' : watchingNow ? 'Agent watching' : 'No agent watching';
+  status.title = watchingNow || chatWorking ? 'Your agent will see messages as you send them.'
+    : 'Messages are saved, but no agent is running `local-review watch`. Ask your agent to check local-review.';
+  if (!chatOpen()) return;
+  const shownKey = JSON.stringify([chat, chatWorking, watchingNow, reviewBranch()]);
+  if (shownKey === chatShown && !toBottom) return;
+  chatShown = shownKey;
+  const log = $('#chat-log');
+  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  log.innerHTML = chat.length
+    ? chat.map((m, i) => chatMsgHtml(m, i === chat.length - 1)).join('') + chatTail()
+    : `<div class="empty">Ask the agent anything about these changes. Messages go to the agent straight away, no review
+       submission needed. To ask about specific lines, start a comment on them and choose <b>Ask in chat</b>.</div>`;
+  if (toBottom || nearBottom) log.scrollTop = log.scrollHeight;
+}
+
+function chatMsgHtml(m, last) {
+  const mine = m.author === 'reviewer', r = m.ref;
+  const chip = r ? `<button class="ref-chip${r.outdated ? ' outdated' : ''}" data-act="chat-jump" data-id="${m.id}"
+      title="${r.outdated ? 'That code has changed since' : 'Show in the diff'}">@<span>${esc(refLabel(r))}</span></button>` : '';
+  const acts = mine && r && !r.outdated
+    ? `<div class="acts"><button class="link" data-act="chat-to-comment" data-id="${m.id}"
+        title="Turn this into a draft review comment on those lines, to track and resolve">Make a review comment</button></div>` : '';
+  const sugg = !mine && last && !chatWorking && (m.suggestions || []).length
+    ? `<div class="suggestions">${m.suggestions.map(t => `<button data-act="chat-suggest" data-text="${esc(t)}">${mdInline(t)}</button>`).join('')}</div>` : '';
+  return `<div class="cmsg ${mine ? 'mine' : 'agent'}">
+    <div class="meta-line"><span class="who">${mine ? 'You' : esc(m.author)}</span><span class="when">${when(m.at)}</span></div>
+    <div class="bubble">${chip}<div class="body md">${md(m.body, r ? langFor(r.file) : null)}</div></div>${acts}${sugg}</div>`;
+}
+
+function chatTail() {
+  if (chatWorking) return '<div class="chat-working"><span>Agent is working</span><span class="dots"></span></div>';
+  if (chat[chat.length - 1].author !== 'reviewer') return '';
+  return watchingNow ? '<div class="chat-working">Sent. The agent will pick it up.</div>'
+    : '<div class="chat-working">No agent is watching. Ask your agent to check local-review.</div>';
+}
+
+function renderChatRef() {
+  const t = chatRef;
+  $('#chat-ref').innerHTML = t ? `<span class="ref-chip">@<span>${esc(t.branch && t.branch !== reviewBranch() ? `[${t.branch}] ` : '')}${esc(t.file)}:${
+    linesLabel(t.start_line, t.line)}${t.side === 'old' ? ' (old)' : ''}</span><button class="x" data-act="chat-ref-clear" title="Remove">✕</button></span>` : '';
+}
+
+async function sendChat(text) {
+  const fromInput = text === undefined;
+  const body = (fromInput ? $('#chat-input').value : text).trim();
+  if (!body || chatSending) return;
+  chatSending = true;
+  $('#chat-send').disabled = true;
+  $('#chat-err').textContent = '';
+  try {
+    const ref = fromInput && chatRef ? chatRef : null;
+    await api('/api/chat', {body, branch: ref ? ref.branch : reviewBranch(), ref});
+    if (fromInput) { $('#chat-input').value = ''; chatRef = null; renderChatRef(); }
+    await loadComments();
+    renderChat(true);
+  } catch (e) {
+    $('#chat-err').textContent = e.message;
+  } finally {
+    chatSending = false;
+    $('#chat-send').disabled = false;
+  }
+}
+
+// Scrolls the diff to a chat reference and lights up its lines.
+function jumpToRef(r) {
+  const i = view.files.findIndex(f => (r.side === 'old' ? f.old_path : f.new_path) === r.file);
+  if (i < 0 || r.outdated || (r.branch && r.branch !== (reviewBranch() ?? meta.branch))) {
+    showBanner(`${refLabel(r)} isn't in this view${r.outdated ? ' (that code has changed since)' : ''}.`);
+    return;
+  }
+  revealFile(i);
+  const row = $(`#f${i} tr.ln[data-${r.side === 'old' ? 'o' : 'n'}="${r.current_line}"]`);
+  if (!row) return;
+  row.scrollIntoView({block: 'center'});
+  paintSelections();
+  paintRange(i, r.side, r.current_start || r.current_line, r.current_line);
+  setTimeout(paintSelections, 2000);
 }
 
 init().catch(e => { $('#loading').innerHTML = `<span class="err">${esc(e.message)}</span>`; });

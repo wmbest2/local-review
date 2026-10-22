@@ -2,8 +2,10 @@
 """local-review: a local, GitHub-style diff review tool whose comments an LLM agent can act on.
 
 Human side:  `local-review` opens a browser UI to review the branch (or uncommitted changes),
-             leave line comments as drafts, and submit them as a batch.
-Agent side:  `local-review list` / `local-review reply` read and answer submitted comments.
+             leave line comments as drafts, and submit them as a batch. A chat panel sends messages
+             to the agent straight away, optionally about a line or range of the diff.
+Agent side:  `local-review list` / `local-review reply` read and answer submitted comments;
+             `local-review chat` reads and answers the chat.
 
 Stacks:      with a `stack.conf` (the push-stack format) at the repo root, the "stack" view reviews
              each branch of a stacked-PR series against the branch below it, like its PR will.
@@ -36,6 +38,7 @@ CONTEXT_LINES = 3  # lines of surrounding code stored with each comment to re-an
 REVIEWER = "reviewer"
 ORPHAN_MIN_AGE_S = 3600  # never prune snapshots this young: another worktree may be mid-submit
 AGENT = "agent"
+WATCH_STALE_S = 5  # a watcher heartbeat older than this means no agent is watching
 
 
 class UserError(Exception):
@@ -447,15 +450,19 @@ def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=F
 
 
 def empty_state():
-    return {"version": 1, "reviews": [], "comments": []}
+    # chat_working: when the agent picked up the chat (it has a reply on the way), or None.
+    return {"version": 1, "reviews": [], "comments": [], "chat": [], "chat_working": None}
 
 
 def load_state(repo):
     try:
         with open(repo.state_path) as f:
-            return json.load(f)
+            st = json.load(f)
     except FileNotFoundError:
         return empty_state()
+    st.setdefault("chat", [])
+    st.setdefault("chat_working", None)
+    return st
 
 
 @contextmanager
@@ -479,7 +486,7 @@ def state_version(repo):
 
 
 def new_id(st, prefix):
-    taken = {c["id"] for c in st["comments"]} | {r["id"] for r in st["reviews"]}
+    taken = {c["id"] for c in st["comments"]} | {r["id"] for r in st["reviews"]} | {m["id"] for m in st["chat"]}
     while True:
         cid = prefix + uuid.uuid4().hex[:6]
         if cid not in taken:
@@ -551,6 +558,34 @@ def annotate(repo, comments):
     return comments
 
 
+def anchor_at(repo, data, branch):
+    """file/side/anchor/old_rev for a line (or start_line..line range) of a file, as comments and chat
+    references store it so they can follow the code when it moves."""
+    path, side = data["file"], data.get("side")
+    line = int(data.get("line"))
+    start = int(data.get("start_line") or line)
+    old_rev = None
+    if side == "new":
+        lines = repo.branch_file_lines(branch, path)
+    elif side == "old":
+        old_rev = data.get("old_rev")
+        if not old_rev:
+            raise UserError("old_rev required for old-side comments")
+        lines = repo.rev_file_lines(old_rev, path)
+    else:
+        raise UserError("side must be 'new' or 'old'")
+    if lines is None or not 1 <= line <= len(lines):
+        raise UserError(f"{path}:{line} does not exist")
+    if not 1 <= start <= line:
+        raise UserError(f"start_line {start} must be between 1 and line {line}")
+    i = line - 1
+    anchor = {"line": line, "line_text": lines[i],
+              "before": lines[max(0, i - CONTEXT_LINES):i], "after": lines[i + 1:i + 1 + CONTEXT_LINES]}
+    if start < line:
+        anchor.update(span=line - start + 1, range_text=lines[start - 1:line])
+    return {"file": path, "side": side, "anchor": anchor, "old_rev": old_rev}
+
+
 def add_comment(repo, data):
     body = (data.get("body") or "").strip()
     if not body:
@@ -558,30 +593,8 @@ def add_comment(repo, data):
     comment = {"status": "draft", "review_id": None, "created_at": now(), "author": REVIEWER,
                "body": body, "replies": [], "file": None, "side": None, "anchor": None,
                "old_rev": None, "head": repo.head(), "branch": data.get("branch") or None}
-    path = data.get("file")
-    if path:
-        side = data.get("side")
-        line = int(data.get("line"))
-        start = int(data.get("start_line") or line)
-        if side == "new":
-            lines = repo.branch_file_lines(comment["branch"], path)
-        elif side == "old":
-            if not data.get("old_rev"):
-                raise UserError("old_rev required for old-side comments")
-            lines = repo.rev_file_lines(data["old_rev"], path)
-            comment["old_rev"] = data["old_rev"]
-        else:
-            raise UserError("side must be 'new' or 'old'")
-        if lines is None or not 1 <= line <= len(lines):
-            raise UserError(f"{path}:{line} does not exist")
-        if not 1 <= start <= line:
-            raise UserError(f"start_line {start} must be between 1 and line {line}")
-        i = line - 1
-        anchor = {"line": line, "line_text": lines[i],
-                  "before": lines[max(0, i - CONTEXT_LINES):i], "after": lines[i + 1:i + 1 + CONTEXT_LINES]}
-        if start < line:
-            anchor.update(span=line - start + 1, range_text=lines[start - 1:line])
-        comment.update(file=path, side=side, anchor=anchor)
+    if data.get("file"):
+        comment.update(anchor_at(repo, data, comment["branch"]))
     with state_txn(repo, write=True) as st:
         comment["id"] = new_id(st, "c")
         st["comments"].append(comment)
@@ -644,6 +657,67 @@ def update_comment(repo, cid, action, data):
         return c
 
 
+# -------------------------------------------------------------------------------------------- chat
+# A running conversation with the agent, separate from review threads: messages post immediately (no
+# drafts, no Submit) and nothing is resolved. A reviewer message can reference a line or range of the
+# diff, anchored like a comment. The agent answers with `local-review chat -m`, optionally offering
+# follow-ups the reviewer can send with one click.
+
+
+def add_chat(repo, data):
+    """Posts a reviewer message, with an optional `ref` ({file, side, line[, start_line, old_rev]})."""
+    body = (data.get("body") or "").strip()
+    if not body:
+        raise UserError("message is empty")
+    msg = {"author": REVIEWER, "body": body, "at": now(), "branch": data.get("branch") or None, "ref": None}
+    if data.get("ref"):
+        msg["ref"] = anchor_at(repo, data["ref"], msg["branch"])
+        msg["ref"]["branch"] = msg["branch"]
+    with state_txn(repo, write=True) as st:
+        msg["id"] = new_id(st, "m")
+        st["chat"].append(msg)
+    return msg
+
+
+def post_agent_chat(repo, body, author=AGENT, suggestions=()):
+    body = body.strip()
+    if not body:
+        raise UserError("message is empty")
+    with state_txn(repo, write=True) as st:
+        msg = {"id": new_id(st, "m"), "author": author, "body": body, "at": now(),
+               "suggestions": [s.strip() for s in suggestions if s.strip()]}
+        st["chat"].append(msg)
+        st["chat_working"] = None
+    return msg
+
+
+def unanswered(chat):
+    """The reviewer's messages since the agent last wrote in the chat."""
+    out = []
+    for m in chat:
+        out = out + [m] if m["author"] == REVIEWER else []
+    return out
+
+
+def annotate_chat(repo, chat):
+    """Adds current_line/current_start/outdated to each message's reference, as annotate() does for comments."""
+    refs = [m["ref"] for m in chat if m.get("ref")]
+    annotate(repo, refs)
+    return chat
+
+
+def heartbeat_path(repo):
+    return os.path.join(repo.state_dir, "watch.heartbeat")
+
+
+def watching(repo):
+    """True while a `local-review watch` is running for this worktree."""
+    try:
+        return time.time() - os.stat(heartbeat_path(repo)).st_mtime < WATCH_STALE_S
+    except FileNotFoundError:
+        return False
+
+
 # ------------------------------------------------------------------------------------------ server
 
 
@@ -683,7 +757,9 @@ class Handler(BaseHTTPRequestHandler):
         with state_txn(repo) as st:
             v = state_version(repo)
             comments = annotate(repo, st["comments"])
-            return {"v": v, "comments": comments, "reviews": st["reviews"]}
+            return {"v": v, "comments": comments, "reviews": st["reviews"],
+                    "chat": annotate_chat(repo, st["chat"]), "chat_working": st["chat_working"],
+                    "watching": watching(repo)}
 
     def do_GET(self):
         if not self._host_ok():
@@ -717,7 +793,7 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/comments":
                 self._json(self._comments_payload())
             elif u.path == "/api/version":
-                self._json({"v": state_version(repo)})
+                self._json({"v": state_version(repo), "watching": watching(repo)})
             else:
                 self._json({"error": "not found"}, 404)
         except (UserError, ValueError) as e:
@@ -735,6 +811,8 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/comments/([\w-]+)/(edit|delete|reply|status)$", u.path)
             if u.path == "/api/comments":
                 self._json(add_comment(repo, data))
+            elif u.path == "/api/chat":
+                self._json(add_chat(repo, data))
             elif u.path == "/api/submit":
                 self._json(submit_review(repo, data.get("summary")))
             elif m:
@@ -923,6 +1001,9 @@ def cmd_list(repo, args):
     if args.json:
         print(json.dumps(sel, indent=2))
         return
+    waiting = len(unanswered(st["chat"]))
+    if waiting:
+        print(f"{waiting} unanswered chat message(s): run `local-review chat` to read them.\n")
     if not sel:
         print("No open review comments.")
         return
@@ -960,17 +1041,74 @@ def cmd_reply(repo, args):
     print(f"{c['id']}: {c['status']}")
 
 
+def cmd_chat(repo, args):
+    if args.working:
+        with state_txn(repo, write=True) as st:
+            st["chat_working"] = now()
+        print("chat: working")
+        return
+    if args.message is not None:
+        body = sys.stdin.read() if args.message == "-" else args.message
+        msg = post_agent_chat(repo, body, args.author, args.suggest or ())
+        print(f"{msg['id']}: sent")
+        return
+    with state_txn(repo) as st:
+        chat = annotate_chat(repo, st["chat"])
+    waiting = {m["id"] for m in unanswered(chat)}
+    shown = chat if args.all else chat[-args.last:]
+    if args.json:
+        print(json.dumps(shown, indent=2))
+        return
+    if not chat:
+        print("The chat is empty.")
+        return
+    print(f"# Chat in {repo.root} ({len(waiting)} unanswered)\n")
+    print('Answer with: local-review chat -m "..." [--suggest "a follow-up the reviewer can click"]...\n')
+    if len(shown) < len(chat):
+        print(f"({len(chat) - len(shown)} earlier message(s); --all shows them)\n")
+    for m in shown:
+        who = "reviewer" if m["author"] == REVIEWER else m["author"]
+        tags = [m["id"], when_label(m["at"])] + (["UNANSWERED"] if m["id"] in waiting else [])
+        about = ""
+        ref = m.get("ref")
+        if ref:
+            ref.setdefault("branch", m.get("branch"))
+            about = f" about {location(ref)}"
+        elif m.get("branch"):
+            about = f" [{m['branch']}]"
+        print(f"## {who} · {' · '.join(tags)}{about}\n")
+        if ref:
+            print("```")
+            print(excerpt(repo, ref))
+            print("```\n")
+        print(m["body"] + "\n")
+        if m.get("suggestions"):
+            print("Suggested follow-ups: " + " | ".join(m["suggestions"]) + "\n")
+
+
+def when_label(iso):
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%H:%M")
+    except (TypeError, ValueError):
+        return ""
+
+
 def cmd_status(repo, args):
     st = load_state(repo)
     counts = {}
     for c in st["comments"]:
         counts[c["status"]] = counts.get(c["status"], 0) + 1
+    waiting = len(unanswered(st["chat"]))
     if args.hook:
         if counts.get("open"):
             print(f"[local-review] {counts['open']} open review comment(s) in this worktree. "
                   f"Run `local-review list` to see them.")
+        if waiting:
+            print(f"[local-review] {waiting} unanswered chat message(s) in this worktree. "
+                  f"Run `local-review chat` to read them.")
         return
-    print(" ".join(f"{k}={counts.get(k, 0)}" for k in ("draft", "open", "replied", "addressed", "resolved")))
+    print(" ".join(f"{k}={counts.get(k, 0)}" for k in ("draft", "open", "replied", "addressed", "resolved"))
+          + f" chat={waiting}")
 
 
 def reviewer_replies(st):
@@ -981,32 +1119,55 @@ def reviewer_replies(st):
 def cmd_watch(repo, args):
     """Prints one line per newly submitted review or reviewer reply; with --once, exits after the first.
 
-    Replies count as well as submissions: answering the agent in a thread posts immediately, with no
-    Submit, and it is just as much the agent's turn as a fresh review.
+    Replies and chat messages count as well as submissions: both post immediately, with no Submit, and
+    are just as much the agent's turn as a fresh review. While it runs, the watcher touches a heartbeat
+    file so the UI can show that an agent is listening; when it reports a chat message it marks the chat
+    as being worked on, so the reviewer sees it was picked up before the agent's answer arrives.
     """
     st = load_state(repo)
     seen = {r["id"] for r in st["reviews"]}
     seen_replies = reviewer_replies(st)
+    seen_chat = {m["id"] for m in st["chat"]}
     last = state_version(repo)
-    while True:
-        time.sleep(args.interval)
-        v = state_version(repo)
-        if v == last:
-            continue
-        last = v
-        st = load_state(repo)
-        events = []
-        for r in st["reviews"]:
-            if r["id"] not in seen:
-                seen.add(r["id"])
-                events.append(f"review {r['id']} submitted with {r['comment_count']} comment(s)")
-        for cid in sorted({cid for cid, _ in reviewer_replies(st) - seen_replies}):
-            events.append(f"reviewer replied on {cid}")
-        seen_replies = reviewer_replies(st)
-        for event in events:
-            print(f"local-review: {event} in {repo.root}. Run `local-review list`.", flush=True)
-        if events and args.once:
-            return
+    beat = heartbeat_path(repo)
+    try:
+        while True:
+            # Only feeds the UI's "agent watching" label, so a failed write (disk full) mustn't stop the watch.
+            try:
+                with open(beat, "w") as f:
+                    f.write(str(os.getpid()))
+            except OSError:
+                pass
+            time.sleep(args.interval)
+            v = state_version(repo)
+            if v == last:
+                continue
+            last = v
+            st = load_state(repo)
+            events = []
+            for r in st["reviews"]:
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    events.append((f"review {r['id']} submitted with {r['comment_count']} comment(s)", "list"))
+            for cid in sorted({cid for cid, _ in reviewer_replies(st) - seen_replies}):
+                events.append((f"reviewer replied on {cid}", "list"))
+            seen_replies = reviewer_replies(st)
+            new_chat = [m["id"] for m in st["chat"] if m["id"] not in seen_chat and m["author"] == REVIEWER]
+            seen_chat = {m["id"] for m in st["chat"]}
+            if new_chat:
+                events.append((f"reviewer sent {len(new_chat)} chat message(s)", "chat"))
+                with state_txn(repo, write=True) as st:
+                    st["chat_working"] = st["chat_working"] or now()
+                last = state_version(repo)
+            for event, cmd in events:
+                print(f"local-review: {event} in {repo.root}. Run `local-review {cmd}`.", flush=True)
+            if events and args.once:
+                return
+    finally:
+        try:
+            os.remove(beat)
+        except FileNotFoundError:
+            pass
 
 
 def main():
@@ -1033,6 +1194,15 @@ def main():
     s.add_argument("--addressed", action="store_true", help="mark as addressed (code changed)")
     s.add_argument("--author", default=AGENT)
 
+    s = sub.add_parser("chat", help="read the chat, or answer it as the agent with -m")
+    s.add_argument("-m", "--message", help="post this message as the agent ('-' reads stdin)")
+    s.add_argument("--suggest", action="append", help="with -m: a follow-up the reviewer can send with one click (repeatable)")
+    s.add_argument("--working", action="store_true", help="show the reviewer that you're working on an answer")
+    s.add_argument("--all", action="store_true", help="print the whole conversation")
+    s.add_argument("--last", type=int, default=20, help="print the last N messages (default 20)")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--author", default=AGENT)
+
     s = sub.add_parser("status", help="print comment counts")
     s.add_argument("--hook", action="store_true", help="print a reminder only if comments are open")
 
@@ -1041,8 +1211,8 @@ def main():
     s.add_argument("--force", action="store_true", help="with --all: discard even draft/open comments")
     s.add_argument("--dry-run", action="store_true")
 
-    s = sub.add_parser("watch", help="print a line whenever a review is submitted (for agents)")
-    s.add_argument("--once", action="store_true", help="exit after the first submitted review")
+    s = sub.add_parser("watch", help="print a line whenever a review, reply or chat message arrives (for agents)")
+    s.add_argument("--once", action="store_true", help="exit after the first event")
     s.add_argument("--interval", type=float, default=1.0, help="poll interval in seconds")
 
     args = p.parse_args()
@@ -1050,7 +1220,7 @@ def main():
         args = p.parse_args(sys.argv[1:] + ["serve"])
     try:
         repo = Repo(args.path)
-        {"serve": cmd_serve, "list": cmd_list, "reply": cmd_reply, "status": cmd_status,
+        {"serve": cmd_serve, "list": cmd_list, "reply": cmd_reply, "chat": cmd_chat, "status": cmd_status,
          "watch": cmd_watch, "clean": cmd_clean}[args.cmd](repo, args)
     except UserError as e:
         if getattr(args, "hook", False):

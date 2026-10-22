@@ -1,5 +1,5 @@
 // Regenerates the README screenshots: builds the example repo (docs/example/make-example.sh), serves
-// it, seeds a submitted review with agent replies, and captures the UI with headless Chrome over the
+// it, seeds a submitted review with agent replies and a chat, and captures the UI with headless Chrome over the
 // DevTools protocol. Node 22+ (built-in WebSocket and fetch), no packages.
 //
 //   node docs/screenshots.mjs [path to Chrome]
@@ -36,10 +36,24 @@ const calc = 'src/main/kotlin/tips/TipCalculator.kt';
 const capped = await ask(calc, 10, 'Is 100% really the cap? People tip more than that on a small bill.');
 const leftover = await ask(calc, 22, 'Worth a word on why leftover cents go to the *first* shares rather than spreading them?', 19);
 await ask('src/main/kotlin/tips/Split.kt', 8, 'Nit: `shares` could take `percent` too, so callers aren\'t stuck with the default.');
-await post('/api/submit', {summary: 'Looks good. A couple of questions on the edge cases.'});
+await post('/api/submit', {});
 const reply = (c, msg, ...flags) => execFileSync('python3', [tool, 'reply', c.id, '-m', msg, ...flags], {cwd: repo});
 reply(capped, 'The cap stops a typo like `180` tipping 180%. Happy to raise it to 200 if you\'d rather.');
 reply(leftover, 'It keeps every share within a cent of the others and the order stable, so person 1 always rounds up. Added that to the KDoc.', '--addressed');
+
+// A chat: a question about a range of lines, answered with follow-ups the reviewer can click.
+await post('/api/chat', {body: 'Why work in cents here instead of `BigDecimal`?', ref: {file: calc, side: 'new', start_line: 19, line: 22}});
+execFileSync('python3', [tool, 'chat', '-m', [
+  'Cents keep it exact without `BigDecimal`\'s ceremony: every amount is a whole `Long`, so nothing rounds until the split.',
+  '',
+  '| | Cents (`Long`) | `BigDecimal` |',
+  '|---|---|---|',
+  '| Exact | yes | yes |',
+  '| Rounding mode to pick | no | yes |',
+  '| Allocation | none | per value |',
+  '',
+  'The one catch is overflow, past about 92 quadrillion dollars.',
+].join('\n'), '--suggest', 'Add a KDoc note on why amounts are in cents', '--suggest', 'Leave it as is'], {cwd: repo});
 
 procs.push(spawn(chromePath, ['--headless=new', `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${join(work, 'chrome')}`,
   '--hide-scrollbars', '--no-first-run', 'about:blank'], {stdio: 'ignore'}));
@@ -52,13 +66,15 @@ await shoot('screenshot.png', {sideBySide: false, scrollTo: calc});
 await shoot('side-by-side.png', {sideBySide: true, scrollTo: calc});
 // The header's per-kind totals popover, cropped to the top right.
 await shoot('totals.png', {sideBySide: false, focus: '#totals', clip: {x: WIDTH - 720, y: 0, width: 720, height: 170}});
+await shoot('chat.png', {sideBySide: false, scrollTo: calc, chat: true});
 console.log('Screenshots written to', here);
 process.exit(0);
 
-async function shoot(name, {sideBySide, scrollTo, focus, clip}) {
+async function shoot(name, {sideBySide, scrollTo, focus, clip, chat}) {
   await cdp('Page.navigate', {url: base});
   await waitFor(() => evaluate(`location.origin === ${JSON.stringify(base)} && document.readyState === 'complete'`));
   await evaluate(`localStorage.clear(); ${sideBySide ? "localStorage.setItem('lr:side-by-side', '1');" : ''} true`);
+  if (chat) await evaluate(`fetch('/api/meta').then(r => r.json()).then(m => { localStorage.setItem('lr:' + m.root + ':chat', '1'); return true; })`);
   await cdp('Page.navigate', {url: base});
   await waitFor(() => evaluate(`!document.querySelector('#content').hidden && document.querySelectorAll('.thread').length >= 3`));
   if (scrollTo) await evaluate(`(() => {

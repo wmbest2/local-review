@@ -1,6 +1,6 @@
 # local-review
 
-Local, GitHub-style review for agent-written changes. You review in a browser and leave line comments; the agent reads them and replies from the CLI. No push required. Python 3 stdlib only.
+Local, GitHub-style review for agent-written changes. You review in a browser and leave line comments, or chat with the agent in a side panel; the agent reads them and replies from the CLI. No push required. Python 3 stdlib only.
 
 ![local-review UI: a review thread with the agent's reply inline in a syntax-highlighted diff, with the file list split into code, tests, resources and project files](docs/screenshot.png)
 
@@ -80,17 +80,41 @@ git config --add local-review.code 'app/src/main/res/raw/rules.js'
 ```
 
 ### Review flow
-1. Hover a line and click **+** to write a comment. Comments stay **drafts** (invisible to the agent) until you click **Submit review**. You can include an overall summary.
+1. Hover a line and click **+** to write a comment. Comments stay **drafts** (invisible to the agent) until you click **Submit review**. For anything general, use the [chat](#chat) instead.
 2. The agent runs `local-review list`, makes changes, and runs `local-review reply <id> [--addressed] -m "..."`.
 3. The UI polls, so replies show up live. Replying yourself reopens the thread. Only you **Resolve**.
 
 Statuses: `draft` → `open` → `replied` (agent answered) / `addressed` (agent changed code) → `resolved`.
 
+### Chat
+**Chat** (header, or `c`) opens a panel on the right for talking to the agent about the changes. It replaces general (file-less) review comments: messages go to the agent as soon as you send them, with no draft or Submit step, and nothing needs resolving. ↩ sends, ⇧↩ adds a line.
+
+![The chat panel: a question about a range of lines, answered with a table and two follow-ups to click](docs/chat.png)
+
+- **About specific lines:** start a comment on a line or range as usual and choose **Ask in chat**. The message carries an `@file:lines` reference, anchored like a comment, so it follows the code as it moves. Click the reference to jump to those lines.
+- **Follow-ups:** the agent can offer suggested replies; click one to send it.
+- **Make a review comment:** turns a chat message about lines into a draft comment on them, when it's something to track and resolve.
+- **Is anyone listening?** The panel shows **Agent watching** while an agent runs `local-review watch`, **Agent working** once it has picked up your message, and **No agent watching** otherwise (messages are kept either way).
+
+The page checks for changes every second (a cheap stat of the state file), so answers appear on their own. How fast they arrive depends on the agent: it answers when its watcher wakes it and it finishes a turn.
+
+Agent side:
+
+```sh
+local-review chat                                    # the conversation; unanswered messages are marked
+local-review chat --working                          # show the reviewer you're on it (watch does this for you)
+local-review chat -m "..." --suggest "Do X" --suggest "Leave it"   # answer, with follow-ups
+local-review chat -m - < answer.md                   # a longer answer from stdin
+```
+
+Markdown renders in chat and comments: code blocks (highlighted), tables, lists, quotes, links.
+
 ### Anchoring
 Each comment stores its line's text plus 3 lines of context either side. When the file changes, the comment follows its line to the new position. If the line itself changed, the comment is marked **outdated** and shows its original context.
 
 ## Storage
-- `<git-dir>/local-review/state.json`: per worktree, never committed.
+- `<git-dir>/local-review/state.json`: comments, reviews and the chat; per worktree, never committed.
+- `<git-dir>/local-review/watch.heartbeat`: touched every second by a running `watch`.
 - `refs/local-review/<review-id>`: the working-tree snapshot for each submitted review, used by "Since last review". Snapshots are built from a throwaway index, so your real index and stash are never touched.
 
 ## Cleanup
@@ -105,10 +129,10 @@ local-review clean --all      # discard this worktree's whole review (refuses wi
 Snapshots that no worktree refers to anymore (e.g. the worktree was deleted) are pruned automatically each time `local-review` starts, once they're over an hour old. `clean` prunes them too. `state.json` and `archive.json` live in the worktree's git dir, so `git worktree remove` deletes them.
 
 ## Watching
-`local-review watch` prints one line each time a review is submitted or you reply in a thread (replies post immediately, without Submit). `--once` exits after the first event. An agent runs `watch --once` in the background, addresses the review when it exits, then starts it again. The `address-review` skill does this by default whenever it has started a review server, so you don't have to ask.
+`local-review watch` prints one line each time a review is submitted, you reply in a thread, or you send a chat message (replies and chat post immediately, without Submit). While it runs it keeps a heartbeat file in the state directory, which is how the chat panel knows an agent is watching; when it reports a chat message it marks the chat as being worked on. `--once` exits after the first event. An agent runs `watch --once` in the background, addresses the review when it exits, then starts it again. The `address-review` skill does this by default whenever it has started a review server, so you don't have to ask.
 
 ## Hook (optional)
-`local-review status --hook` prints a one-line reminder only when comments are open, and prints nothing outside a git repo. It's suitable for a Claude Code `UserPromptSubmit` hook.
+`local-review status --hook` prints a one-line reminder only when comments are open or chat messages are unanswered, and prints nothing outside a git repo. It's suitable for a Claude Code `UserPromptSubmit` hook.
 
 ## Syntax highlighting
 Uses highlight.js 11.12.0 (BSD-3-Clause), vendored in `vendor/` and served locally, so it works offline. Each hunk is highlighted as one block, so multi-line comments and strings render correctly. A hunk that starts partway through a block comment can be mis-highlighted; set **Context** to "Full file" to fix that.

@@ -1,11 +1,11 @@
 ---
 name: address-review
-description: Start a local-review session and address the review comments the user leaves in it (local-review is a local GitHub-style diff reviewer). Use when the user asks to spin up, open or start local-review (or a review of your changes), says "address my review", "I left comments", "check local-review", "/address-review", or a watcher or hook reports local-review activity.
+description: Start a local-review session and address the review comments and chat messages the user leaves in it (local-review is a local GitHub-style diff reviewer with a chat panel). Use when the user asks to spin up, open or start local-review (or a review of your changes), says "address my review", "I left comments", "check local-review", "/address-review", or a watcher or hook reports local-review activity.
 ---
 
 # Address local-review comments
 
-The user reviews your changes in the `local-review` browser UI and submits line comments in batches. You read them and answer them with the `local-review` CLI, run from the repo/worktree being reviewed.
+The user reviews your changes in the `local-review` browser UI and submits line comments in batches, and can chat with you in a side panel (messages arrive one at a time, straight away). You read and answer both with the `local-review` CLI, run from the repo/worktree being reviewed.
 
 ## Starting a review
 
@@ -13,14 +13,14 @@ When the user asks for a review (or you offer one and they accept):
 
 1. Work out what to review: the repo or worktree with your changes, and the base. Use `--base <branch>` for the branch it will merge into (or the branch below it in a stack); without a stack.conf or an obvious base, ask the user rather than guessing.
 2. Start the server in the background from that worktree: `local-review serve --base <base> --no-open --port <port>`. Each worktree needs its own port; pick a free one if another review is running. Give the user the URL.
-3. **Start the watcher straight away, without being asked**: `local-review watch --once`, in the background from the same worktree, so you're told when the user submits a review or replies in a thread (see Watching below). Tell the user you're watching.
+3. **Start the watcher straight away, without being asked**: `local-review watch --once`, in the background from the same worktree, so you're told when the user submits a review, replies in a thread or sends a chat message (see Watching below). The chat panel shows the user whether a watcher is running. Tell the user you're watching.
 4. If you can't run background commands that notify you when they exit, say so, and ask the user to tell you ("check local-review") when they've submitted.
 
 ## Addressing a review
 
 
-1. Run `local-review list` to see every open comment, with its id, current `file:line`, a code excerpt and the full thread. If nothing is open, say so, re-arm the watcher and stop.
-2. Read all the comments before you edit anything. Comments in one review often relate to each other, and the general (file-less) comments explain the reviewer's overall intent.
+1. Run `local-review list` to see every open comment (it also says when chat messages are waiting; see Answering the chat), with its id, current `file:line`, a code excerpt and the full thread. If nothing is open, say so, re-arm the watcher and stop.
+2. Read all the comments before you edit anything. Comments in one review often relate to each other, and general (file-less) comments from older reviews explain the reviewer's overall intent.
 3. Handle each comment:
    - **Requested change:** make it, then reply saying briefly what you changed, and pass `--addressed`.
    - **Question:** answer it. Change code only if the answer shows a problem. Reply without `--addressed`, which sets the status to "replied".
@@ -33,12 +33,23 @@ When the user asks for a review (or you offer one and they accept):
 7. Re-arm the watcher (see Watching).
 8. Finish with a short summary for the user: how many comments you addressed, which ones you replied to or pushed back on, and anything still unresolved. Point them back to the UI (`local-review`, then **Since last review**) to check your changes.
 
+## Answering the chat
+
+When the watcher reports a chat message (or `list`/the hook says chat messages are unanswered):
+
+1. Run `local-review chat` to read the conversation. Unanswered messages are marked `UNANSWERED`; a message `about` a file and line range comes with a code excerpt, already re-anchored to where that code is now.
+2. Answer them in **one** message: `local-review chat -m "..."`, or pipe a longer answer on stdin with `-m -`. Markdown renders (code blocks, tables, lists). Keep it conversational and short; it's a chat, not a report.
+3. When there are natural next steps, offer them with `--suggest "..."` (repeatable, 2–3 at most, each a short imperative the user could have typed, like "Add a KDoc note on why amounts are in cents"). The user sends one with a click, and it arrives as an ordinary chat message.
+4. If the user asks for a change in chat, make it, as you would for a comment, then say in your answer what changed and where. Chat has no `--addressed` and nothing to resolve.
+5. Always answer, even just to say you're on it or can't do something: answering clears the "Agent working" indicator the watcher set when it picked the message up. For long work, answer first with what you're about to do, then again when it's done.
+6. Re-arm the watcher.
+
 ## Watching
 
 Keep a watcher running for as long as a review server you started is up; that's the default, not something the user has to ask for.
 
-- Run `local-review watch --once` in the background (e.g. Bash with `run_in_background`) from the reviewed worktree. It exits when a review is submitted or the reviewer replies in a thread.
-- When it exits, address the review (steps above), then **start it again** before you finish your turn, so the next round is picked up too. Re-arm after addressing comments you found any other way as well (the user asked you to check, or a hook reported them).
+- Run `local-review watch --once` in the background (e.g. Bash with `run_in_background`) from the reviewed worktree. It exits when a review is submitted, the reviewer replies in a thread, or they send a chat message; its output says whether to run `list` or `chat`.
+- When it exits, address the review or answer the chat (steps above), then **start it again** before you finish your turn, so the next round is picked up too. Re-arm after addressing comments you found any other way as well (the user asked you to check, or a hook reported them).
 - One watcher per reviewed worktree. If you're reviewing two worktrees at once, watch both.
 - If a watcher stops without an event (the session restarted, it was killed), start it again the next time you notice, and check `local-review list` in case you missed something.
 - Stop re-arming only when the user says to, or the review is finished (see Cleaning up).
