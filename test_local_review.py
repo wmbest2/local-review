@@ -224,6 +224,66 @@ class LocalReviewTest(unittest.TestCase):
         self.assertIn(f"reviewer replied on {c['id']}", out.getvalue())
         self.assertNotIn("submitted", out.getvalue())
 
+    def test_watch_once_wakes_on_a_chat_message_and_marks_it_picked_up(self):
+        lr.add_chat(self.repo, {"body": "before watching"})  # not an event
+        out = io.StringIO()
+        watcher = threading.Thread(target=lambda: self._watch(out))
+        watcher.start()
+        time.sleep(0.3)
+        self.assertTrue(lr.watching(self.repo), "the watcher's heartbeat shows in the UI")
+        self.assertIsNone(lr.load_state(self.repo)["chat_working"])
+        lr.add_chat(self.repo, {"body": "why 42?"})
+        watcher.join(timeout=5)
+        self.assertFalse(watcher.is_alive())
+        self.assertIn("reviewer sent 1 chat message(s)", out.getvalue())
+        self.assertIn("Run `local-review chat`", out.getvalue())
+        self.assertIsNotNone(lr.load_state(self.repo)["chat_working"], "picked up: the UI shows the agent working")
+        self.assertFalse(lr.watching(self.repo), "the heartbeat goes when the watcher exits")
+
+    def test_chat_round_trip(self):
+        m1 = lr.add_chat(self.repo, {"body": "General question"})
+        m2 = lr.add_chat(self.repo, {"body": "Why **42**?", "ref": {"file": "Foo.kt", "side": "new", "start_line": 5, "line": 6}})
+        self.assertIsNone(m1["ref"])
+        self.assertEqual(m2["ref"]["anchor"]["span"], 2)
+        with self.assertRaises(lr.UserError):
+            lr.add_chat(self.repo, {"body": "  "})
+        with self.assertRaises(lr.UserError):
+            lr.add_chat(self.repo, {"body": "x", "ref": {"file": "Foo.kt", "side": "new", "line": 99}})
+
+        st = lr.load_state(self.repo)
+        self.assertEqual([m["id"] for m in lr.unanswered(st["chat"])], [m1["id"], m2["id"]])
+        self.assertIn("chat=2", self.cli(lr.cmd_status, hook=False))
+        self.assertIn("2 unanswered chat message(s)", self.cli(lr.cmd_status, hook=True))
+        self.assertIn("2 unanswered chat message(s)", self.cli(lr.cmd_list, all=False, json=False))
+
+        # The reference follows its code, and the agent sees it with an excerpt.
+        self.write("Foo.kt", "// header\n\n" + FOO_V2)
+        out = self.cli(lr.cmd_chat, working=False, message=None, all=False, last=20, json=False)
+        self.assertIn("(2 unanswered)", out)
+        self.assertIn(f"## reviewer · {m2['id']}", out)
+        self.assertIn("UNANSWERED about Foo.kt:7-8", out)
+        self.assertIn("> 8 |     return 42 // magic", out)
+
+        self.cli(lr.cmd_chat, working=True, message=None)
+        self.assertIsNotNone(lr.load_state(self.repo)["chat_working"])
+        sent = self.cli(lr.cmd_chat, working=False, message="It's the answer.", suggest=["Rename it", " "], author="agent")
+        self.assertIn(": sent", sent)
+        st = lr.load_state(self.repo)
+        self.assertIsNone(st["chat_working"], "an answer clears the working indicator")
+        self.assertEqual(st["chat"][-1]["suggestions"], ["Rename it"])
+        self.assertEqual(lr.unanswered(st["chat"]), [])
+        self.assertIn("chat=0", self.cli(lr.cmd_status, hook=False))
+        self.assertEqual(self.cli(lr.cmd_status, hook=True), "")
+        out = self.cli(lr.cmd_chat, working=False, message=None, all=False, last=1, json=False)
+        self.assertIn("(2 earlier message(s); --all shows them)", out)
+        self.assertIn("Suggested follow-ups: Rename it", out)
+
+    def test_older_state_without_chat_loads(self):
+        with open(self.repo.state_path, "w") as f:
+            json.dump({"version": 1, "reviews": [], "comments": []}, f)
+        self.assertEqual(lr.load_state(self.repo)["chat"], [])
+        self.assertTrue(lr.add_chat(self.repo, {"body": "hi"})["id"].startswith("m"))
+
     def test_ignore_whitespace_and_single_file(self):
         # Re-indent Foo.kt in the working tree: a whitespace-only change on top of the branch.
         self.write("Foo.kt", FOO_V2.replace("    return 1", "        return 1"))
@@ -307,6 +367,14 @@ class LocalReviewTest(unittest.TestCase):
                                          data=json.dumps({"file": "Foo.kt", "side": "new", "line": 6, "body": "hi"}).encode())
             with urllib.request.urlopen(req) as r:
                 self.assertEqual(json.load(r)["status"], "draft")
+            req = urllib.request.Request(url + "/api/chat", method="POST", headers={"X-Local-Review": "1"},
+                                         data=json.dumps({"body": "hello", "ref": {"file": "Foo.kt", "side": "new", "line": 6}}).encode())
+            with urllib.request.urlopen(req) as r:
+                self.assertEqual(json.load(r)["ref"]["anchor"]["line_text"], "    return 42 // magic")
+            with urllib.request.urlopen(url + "/api/comments") as r:
+                payload = json.load(r)
+            self.assertEqual(payload["chat"][0]["ref"]["current_line"], 6)
+            self.assertIs(payload["watching"], False)
         finally:
             httpd.shutdown()
             httpd.server_close()
