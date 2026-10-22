@@ -193,11 +193,25 @@
   .msg .who { font-weight: 600; font-size: 13px; } .msg .when { color: var(--faint); font-size: 12px; margin-left: 8px; }
   .msg.agent .who { color: var(--draft); }
   .msg .body { margin-top: 4px; overflow-wrap: anywhere; max-width: 75ch; line-height: 1.6; color: var(--fg-soft); }
-  .msg .body pre, pre.ctx { background: var(--panel); padding: 10px 12px; border-radius: 6px; overflow: auto;
+  .md pre, pre.ctx { background: var(--panel); padding: 10px 12px; border-radius: 6px; overflow: auto;
                             border: 1px solid var(--divider); font-family: var(--mono); font-size: 12.5px;
                             line-height: 1.55; margin: 6px 0; white-space: pre; max-width: none; }
-  .msg .body code { background: var(--panel); padding: .1em .35em; border-radius: 4px; font-family: var(--mono);
+  .md code { background: var(--panel); padding: .1em .35em; border-radius: 4px; font-family: var(--mono);
                     font-size: 85%; border: 1px solid var(--divider); }
+  .md pre code { background: none; border: none; padding: 0; font-size: inherit; }
+  .md p, .md ul, .md ol, .md blockquote, .md table { margin: 6px 0; }
+  .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+  .md ul, .md ol { padding-left: 1.6em; }
+  .md li > p { margin: 0; } .md li > ul, .md li > ol { margin: 2px 0; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+    font-size: 1em; margin: 10px 0 4px; color: var(--fg); }
+  .md h1, .md h2 { font-size: 1.15em; }
+  .md blockquote { padding: 0 0 0 10px; border-left: 3px solid var(--divider); color: var(--muted); }
+  .md hr { border: none; border-top: 1px solid var(--divider); margin: 10px 0; }
+  .md a { color: var(--accent); }
+  .md table { border-collapse: collapse; display: block; overflow: auto; max-width: 100%; }
+  .md th, .md td { border: 1px solid var(--divider); padding: 3px 8px; }
+  .md th { background: var(--panel); }
   .reply { padding: 10px 14px; border-top: 1px solid var(--divider); }
   .reply textarea { min-height: 38px; }
   .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
@@ -288,14 +302,116 @@ async function api(path, body) {
   return j;
 }
 
-// Tiny markdown: fenced code, inline code, bold. Everything is escaped first.
-function md(text) {
-  const parts = String(text).split(/```[^\n]*\n?/);
-  return parts.map((p, i) => {
-    if (i % 2 === 1) return `<pre>${esc(p.replace(/\n$/, ''))}</pre>`;
-    return esc(p).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
-      .replace(/\n/g, '<br>');
-  }).join('');
+// GitHub-flavoured markdown for comment bodies: fenced (highlighted) and indented code, headings, lists,
+// quotes, tables and rules, with inline code, bold, italics, strikethrough and links. Text is escaped
+// before any markup is added, and links only go to http(s) and mailto. Code blocks without a language
+// (indented, or a bare ``` fence) are highlighted as [lang], the language of the file being discussed.
+const MD_FENCE = /^ {0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/;
+const MD_INDENT = /^( {4}|\t)/;
+const MD_HEADING = /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/;
+const MD_RULE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
+const MD_ITEM = /^( {0,3})([-*+]|\d{1,9}[.)])(\s+|$)/;
+const MD_QUOTE = /^ {0,3}> ?/;
+const MD_TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+function md(text, lang = null) {
+  const lines = String(text).replace(/\r\n?/g, '\n').replace(/\0/g, '').split('\n');
+  const out = [];
+  const blank = l => l === undefined || !l.trim();
+  const isTable = i => lines[i].includes('|') && MD_TABLE_SEP.test(lines[i + 1] || '') && (lines[i + 1] || '').includes('-');
+  const startsBlock = i => MD_FENCE.test(lines[i]) || MD_HEADING.test(lines[i]) || MD_RULE.test(lines[i]) ||
+    MD_ITEM.test(lines[i]) || MD_QUOTE.test(lines[i]) || isTable(i);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    let m;
+    if (blank(line)) { i++; continue; }
+    if ((m = line.match(MD_FENCE))) {
+      const body = [];
+      for (i++; i < lines.length && !lines[i].trim().startsWith(m[1]); i++) body.push(lines[i]);
+      i++;
+      out.push(mdCode(body, m[2] || lang));
+    } else if (MD_INDENT.test(line)) {
+      const body = [];
+      while (i < lines.length && (MD_INDENT.test(lines[i]) || (blank(lines[i]) && MD_INDENT.test(lines[i + 1] || '')))) {
+        body.push(lines[i++].replace(MD_INDENT, ''));
+      }
+      out.push(mdCode(body, lang));
+    } else if ((m = line.match(MD_HEADING))) {
+      out.push(`<h${m[1].length}>${mdInline(m[2])}</h${m[1].length}>`);
+      i++;
+    } else if (MD_RULE.test(line)) {
+      out.push('<hr>');
+      i++;
+    } else if (MD_QUOTE.test(line)) {
+      const body = [];
+      while (i < lines.length && MD_QUOTE.test(lines[i])) body.push(lines[i++].replace(MD_QUOTE, ''));
+      out.push(`<blockquote>${md(body.join('\n'), lang)}</blockquote>`);
+    } else if (MD_ITEM.test(line)) {
+      const ordered = /\d/.test(line.match(MD_ITEM)[2]);
+      const items = [];
+      while (i < lines.length) {
+        const im = lines[i].match(MD_ITEM);
+        if (!im || /\d/.test(im[2]) !== ordered) break;
+        // An item's own lines: the rest of its first line, then anything indented past its marker
+        // (nested lists and code included) or lazily continuing its paragraph.
+        const width = im[0].length - (im[3] ? im[3].length - 1 : 0);
+        const body = [lines[i].slice(im[0].length)];
+        for (i++; i < lines.length; i++) {
+          const l = lines[i];
+          if (blank(l)) {
+            if (!blank(lines[i + 1]) && /^\s/.test(lines[i + 1]) && lines[i + 1].search(/\S/) >= width) { body.push(''); continue; }
+            break;
+          }
+          const indent = l.search(/\S/);
+          if (indent >= width) body.push(l.slice(Math.min(indent, width)));
+          else if (!startsBlock(i)) body.push(l.trim());
+          else break;
+        }
+        items.push(body.join('\n'));
+        if (blank(lines[i]) && MD_ITEM.test(lines[i + 1] || '')) i++;
+      }
+      const start = ordered ? parseInt(line.match(MD_ITEM)[2], 10) : 1;
+      const tag = ordered ? 'ol' : 'ul';
+      out.push(`<${tag}${start !== 1 ? ` start="${start}"` : ''}>${items.map(b => `<li>${md(b, lang)}</li>`).join('')}</${tag}>`);
+    } else if (isTable(i)) {
+      const cells = l => l.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+      const align = cells(lines[i + 1]).map(c => c.endsWith(':') ? (c.startsWith(':') ? 'center' : 'right') : (c.startsWith(':') ? 'left' : ''));
+      const row = (l, tag) => `<tr>${cells(l).map((c, k) => `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ''}>${mdInline(c)}</${tag}>`).join('')}</tr>`;
+      const head = row(lines[i], 'th');
+      const rows = [];
+      for (i += 2; i < lines.length && !blank(lines[i]) && lines[i].includes('|'); i++) rows.push(row(lines[i], 'td'));
+      out.push(`<table><thead>${head}</thead><tbody>${rows.join('')}</tbody></table>`);
+    } else {
+      const para = [line.trim()];
+      for (i++; i < lines.length && !blank(lines[i]) && !startsBlock(i) && !MD_INDENT.test(lines[i]); i++) para.push(lines[i].trim());
+      out.push(`<p>${para.map(mdInline).join('<br>')}</p>`);
+    }
+  }
+  return out.join('');
+}
+
+function mdCode(lines, info) {
+  const lang = info && typeof hljs !== 'undefined' && hljs.getLanguage(info) ? info : null;
+  return `<pre><code>${highlightLines(lines, lang).join('\n')}</code></pre>`;
+}
+
+function mdInline(text) {
+  // Code spans and backslash escapes are set aside first, so nothing inside them becomes markup.
+  const kept = [];
+  const keep = html => `\0${kept.push(html) - 1}\0`;
+  let s = text
+    .replace(/(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g, (_, t, c) => keep(`<code>${esc(/^ .* $/.test(c) ? c.slice(1, -1) : c)}</code>`))
+    .replace(/\\([\\`*_{}[\]()#+\-.!~|>])/g, (_, c) => keep(esc(c)));
+  const link = (href, label) => keep(`<a href="${href}" target="_blank" rel="noopener noreferrer">`) + label + keep('</a>');
+  s = esc(s)
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g, (_, label, href) => link(href, label))
+    .replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,:;!?"')\]])/g, (_, pre, href) => pre + link(href, href))
+    .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '<strong>$2</strong>')
+    .replace(/(^|[^*\w])\*(?=[^\s*])([^*]*?[^\s*])\*(?![*\w])/g, '$1<em>$2</em>')
+    .replace(/(^|[^_\w])_(?=[^\s_])([^_]*?[^\s_])_(?![_\w])/g, '$1<em>$2</em>')
+    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, '<del>$1</del>');
+  return s.replace(/\0(\d+)\0/g, (_, n) => kept[n]);
 }
 
 function when(iso) {
@@ -935,7 +1051,7 @@ function threadEl(c, showLoc) {
       ${ctx ? `<div class="msg">${ctx}</div>` : ''}
       ${msgs.map(m => `<div class="msg ${m.author === 'reviewer' ? '' : 'agent'}">
         <span class="who">${m.author === 'reviewer' ? 'You' : esc(m.author)}</span><span class="when">${when(m.at)}</span>
-        <div class="body">${md(m.body)}</div></div>`).join('')}
+        <div class="body md">${md(m.body, langFor(c.file))}</div></div>`).join('')}
       ${c.status === 'draft' ? '' : `<div class="reply"><textarea placeholder="Reply…  (⌘↩ to send; replying reopens the thread for the agent)"></textarea>
         <div class="btns"><button class="primary" data-act="reply">Reply</button></div></div>`}
     </div>`;
