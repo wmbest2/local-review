@@ -12,8 +12,8 @@ The user reviews your changes in the `local-review` browser UI and submits line 
 When the user asks for a review (or you offer one and they accept):
 
 1. Work out what to review: the repo or worktree with your changes, and the base. Use `--base <branch>` for the branch it will merge into (or the branch below it in a stack); without a stack.conf or an obvious base, ask the user rather than guessing.
-2. Start the server in the background from that worktree: `local-review serve --base <base> --no-open --port <port>`. Each worktree needs its own port; pick a free one if another review is running. Give the user the URL.
-3. **Start the watcher straight away, without being asked**: `local-review watch --once`, in the background from the same worktree, so you're told when the user submits a review, replies in a thread or sends a chat message (see Watching below). The chat panel shows the user whether a watcher is running. Tell the user you're watching.
+2. Run `local-review serve --base <base> --no-open` from that worktree. One server serves every worktree: if one is already running on the port (default 7400, or `--port`), the command attaches this worktree to it, prints its URL (`/w/<worktree>/`) and exits; otherwise it starts the server, so run it in the background. Give the user the URL. `local-review worktrees` lists what's attached and `local-review detach` stops serving the current one.
+3. **Start the watcher straight away, without being asked**: one `local-review watch` per worktree, started with the Monitor tool (see Watching below), so you're told whenever the user submits a review, replies in a thread or sends a chat message. The chat panel shows the user whether a watcher is running. Tell the user you're watching.
 4. If you can't run background commands that notify you when they exit, say so, and ask the user to tell you ("check local-review") when they've submitted.
 
 ## Addressing a review
@@ -30,7 +30,7 @@ When the user asks for a review (or you offer one and they accept):
 4. Reply with `local-review reply <id> [--addressed] -m "..."`. Id prefixes work. Keep replies short and specific (what changed, where). Use backticks for identifiers. For multi-line replies, pipe a heredoc on stdin instead of passing `-m`.
 5. Never resolve a comment. Only the reviewer resolves.
 6. Validate the way the repo expects (tests, lint), following its CLAUDE.md or AGENTS.md. Don't commit unless the user or the repo conventions say to.
-7. Re-arm the watcher (see Watching).
+7. Check the watcher is still running (see Watching); the Monitor tool re-arms it only when it expires.
 8. Finish with a short summary for the user: how many comments you addressed, which ones you replied to or pushed back on, and anything still unresolved. Point them back to the UI (`local-review`, then **Since last review**) to check your changes.
 
 ## Answering the chat
@@ -42,21 +42,32 @@ When the watcher reports a chat message (or `list`/the hook says chat messages a
 3. When there are natural next steps, offer them with `--suggest "..."` (repeatable, 2–3 at most, each a short imperative the user could have typed, like "Add a KDoc note on why amounts are in cents"). The user sends one with a click, and it arrives as an ordinary chat message.
 4. If the user asks for a change in chat, make it, as you would for a comment, then say in your answer what changed and where. Chat has no `--addressed` and nothing to resolve.
 5. Always answer, even just to say you're on it or can't do something: answering clears the "Agent working" indicator the watcher set when it picked the message up. For long work, answer first with what you're about to do, then again when it's done.
-6. Re-arm the watcher.
+6. Check that it posted: run `local-review chat` again and confirm your message appears and nothing is still `UNANSWERED`. Text in your own session reply is invisible to the reviewer; only `local-review chat -m` or `local-review reply` reaches them.
+7. Check the watcher is still running (see Watching).
+
+### Never leave a message or comment unanswered
+
+The reviewer sees only what you post through `local-review`. An unanswered message leaves the UI stuck on "Agent is working", and the reviewer has to ask again.
+
+- **Every chat message and thread reply gets an answer posted, every time**, including a message that arrives while you're busy with other work, a suggestion the reviewer clicked (it arrives as an ordinary message and asks for the change), and a follow-up that repeats an earlier question.
+- **Check for waiting messages** at the start of each turn, after any long-running step (a build, test run or rebase) and before you finish the turn: run `local-review chat` and `local-review list` in every reviewed worktree, not just the one you're working in. Don't rely on the watcher alone, which can have exited or been killed.
+- **Answer first, then work.** If a request needs more than a minute, post a one-line acknowledgement straight away, then post a second message when it's done and say what changed and where.
+- **Finish by re-checking.** Before ending the turn, `local-review chat` should show no `UNANSWERED` message in any worktree, and every comment you handled should have a reply.
 
 ## Watching
 
-Keep a watcher running for as long as a review server you started is up; that's the default, not something the user has to ask for.
+Keep one watcher running per reviewed worktree for as long as its review server is up; that's the default, not something the user has to ask for.
 
-- Run `local-review watch --once` in the background (e.g. Bash with `run_in_background`) from the reviewed worktree. It exits when a review is submitted, the reviewer replies in a thread, or they send a chat message; its output says whether to run `list` or `chat`.
-- When it exits, address the review or answer the chat (steps above), then **start it again** before you finish your turn, so the next round is picked up too. Re-arm after addressing comments you found any other way as well (the user asked you to check, or a hook reported them).
-- One watcher per reviewed worktree. If you're reviewing two worktrees at once, watch both.
-- If a watcher stops without an event (the session restarted, it was killed), start it again the next time you notice, and check `local-review list` in case you missed something.
-- Stop re-arming only when the user says to, or the review is finished (see Cleaning up).
+- **Start it with the Monitor tool**, not a Bash background task: `command: cd <worktree> && local-review watch` (no `--once`) and `timeout_ms: 1800000`, the most Monitor allows. `watch` keeps running and prints one line per new review, reviewer reply or chat message, each delivered to you as a notification, so an event needs no re-arm. Don't use `watch --once` in a Bash background task: it exits on every event, and a missed re-arm leaves nobody watching.
+- **Re-arm when the monitor expires.** Monitor stops after at most 30 minutes and sends one expiry notice. When it arrives, start the Monitor again straight away, then run `local-review list` and `local-review chat` in case something came in during the gap.
+- **On an event,** address the review or answer the chat (steps above). Post the answer before anything else.
+- **One watcher per worktree.** If you're reviewing two worktrees, start two monitors.
+- **Check it's alive** at the start of each turn and before you finish one: `local-review chat` and `local-review status` still work either way, and the UI's chat panel shows "agent watching" only while the watcher's heartbeat is fresh. If it isn't, start the Monitor again and run `local-review list` and `local-review chat` in case you missed something. A Stop hook (`~/.claude/hooks/local-review-guard.py`) also blocks ending a turn when a served worktree has no watcher or has an unanswered message.
+- **Stop the monitor only** when the user says to, or the review is finished (see Cleaning up).
 
 ## Cleaning up
 
-Snapshots from earlier reviews in the session are kept on purpose, so never clean up in the middle of a review. Run `local-review clean` once the work is finished: the user approves it, says it's merged or done, or asks you to wrap up. It archives resolved threads and drops every snapshot except the latest. Use `clean --all` only when the user wants the whole review thrown away; it refuses if draft or open comments would be lost, unless `--force` is passed. Report what the command removed.
+Snapshots from earlier reviews in the session are kept on purpose, so never clean up in the middle of a review. Run `local-review clean` once the work is finished: the user approves it, says it's merged or done, or asks you to wrap up. It archives resolved threads, drops every snapshot except the latest and stops the server serving this worktree (`serve` attaches it again). Use `clean --all` only when the user wants the whole review thrown away; it refuses if draft or open comments would be lost, unless `--force` is passed. Report what the command removed.
 
 ## Notes
 
