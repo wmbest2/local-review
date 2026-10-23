@@ -35,9 +35,10 @@ cd /tmp/tipcalc && local-review serve --base main
 The screenshots above are that repo, with a submitted review and agent replies seeded. `node docs/screenshots.mjs` regenerates them (headless Chrome, no packages).
 
 ### Views
-- **Branch vs base**: merge-base(base, HEAD) → working tree. The final result, including uncommitted and untracked files.
+- **All commits vs base**: merge-base(base, HEAD) → working tree. The final result, including uncommitted and untracked files.
+- **One commit at a time**: each commit the branch adds to the base, oldest first, against its parent. Step with the ‹ › buttons or the `[` and `]` keys. Committed content only, so uncommitted and untracked files don't appear.
 - **Uncommitted changes**: HEAD → working tree.
-- **Since last review**: snapshot taken when you last clicked Submit → working tree. Use this to check what the agent changed.
+- **Since my last review**: snapshot taken when you last clicked Submit → working tree. Use this to check what the agent changed.
 - **Stack**: one branch of a stacked-PR series against the branch below it, matching what its PR will show. Appears when a `stack.conf` is at the repo root, and is the default when that stack includes the checked-out branch.
 
 ### Stacks
@@ -89,7 +90,7 @@ Statuses: `draft` → `open` → `replied` (agent answered) / `addressed` (agent
 ### Chat
 **Chat** (header, or `c`) opens a panel on the right for talking to the agent about the changes. It replaces general (file-less) review comments: messages go to the agent as soon as you send them, with no draft or Submit step, and nothing needs resolving. ↩ sends, ⇧↩ adds a line.
 
-![The chat panel: a question about a range of lines, answered with a table and two follow-ups to click](docs/chat.png)
+![The chat panel with Agent watching: a question about a range of lines, answered with a table and two follow-ups to click; the worktree switcher is at the top left](docs/chat.png)
 
 - **About specific lines:** start a comment on a line or range as usual and choose **Ask in chat**. The message carries an `@file:lines` reference, anchored like a comment, so it follows the code as it moves. Click the reference to jump to those lines.
 - **Follow-ups:** the agent can offer suggested replies; click one to send it.
@@ -129,7 +130,11 @@ local-review clean --all      # discard this worktree's whole review (refuses wi
 Snapshots that no worktree refers to anymore (e.g. the worktree was deleted) are pruned automatically each time `local-review` starts, once they're over an hour old. `clean` prunes them too. `state.json` and `archive.json` live in the worktree's git dir, so `git worktree remove` deletes them.
 
 ## Watching
-`local-review watch` prints one line each time a review is submitted, you reply in a thread, or you send a chat message (replies and chat post immediately, without Submit). While it runs it keeps a heartbeat file in the state directory, which is how the chat panel knows an agent is watching; when it reports a chat message it marks the chat as being worked on. `--once` exits after the first event. An agent runs `watch --once` in the background, addresses the review when it exits, then starts it again. The `address-review` skill does this by default whenever it has started a review server, so you don't have to ask.
+**Several worktrees, one server.** Run `local-review serve` in each worktree. The first starts the server (on `--port`, default 7400); the others find it on that port and attach to it, and each opens at `/w/<worktree>/`. A switcher next to the title jumps between them (the branch, with the worktree name on hover). Comments, chat and watchers stay per worktree, in each repo's git dir. The server remembers what was attached (`~/.local-review/worktrees.json`, or `$LOCAL_REVIEW_HOME`), so a restart serves them all again; `local-review detach` stops serving the current worktree (and `local-review clean`, which you run when the work is done, does it too), and `local-review worktrees` lists them. Stopping the server stops every review, though the comments are kept.
+
+![The worktree switcher at the top of the file tree, listing two worktrees on one server](docs/worktrees.png)
+
+`local-review watch` prints one line each time a review is submitted, you reply in a thread, or you send a chat message (replies and chat post immediately, without Submit). While it runs it keeps a heartbeat file in the state directory, which is how the chat panel knows an agent is watching; when it reports a chat message it marks the chat as being worked on. It keeps running and prints each event once, so an agent that can stream a command's output (Claude Code's Monitor tool, which expires after at most 30 minutes and must be started again) gets one notification per event with nothing to re-arm. `--once` exits after the first event, for an agent that can only wait for a command to finish: it runs `watch --once` in the background, addresses the review when it exits, then starts it again. The `address-review` skill starts a watcher by default whenever it has started a review server, so you don't have to ask.
 
 ## Hook (optional)
 `local-review status --hook` prints a one-line reminder only when comments are open or chat messages are unanswered, and prints nothing outside a git repo. It's suitable for a Claude Code `UserPromptSubmit` hook.
