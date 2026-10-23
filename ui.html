@@ -46,7 +46,24 @@
   header > #counts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #stack-wrap { min-width: 0; }
   #stack-branch { min-width: 140px; max-width: 420px; width: 100%; text-overflow: ellipsis; }
+  /* Top of the file tree: the full width of the panel, clipped (menu shows all) if the branch is longer. */
+  #worktree-wrap { display: block; margin: 8px; font-size: 11px; color: var(--muted); }
+  #worktree { display: block; width: 100%; margin-top: 3px; font-size: 12px; text-overflow: ellipsis; }
   header .spacer { flex: 1; }
+  #commit-wrap { display: flex; gap: 6px; align-items: center; min-width: 0; flex-shrink: 1; }
+  #commit-wrap button { padding: 3px 10px; }
+  #commit-select { min-width: 200px; max-width: 420px; text-overflow: ellipsis; }
+  #opts { position: relative; }
+  #opts > summary { list-style: none; cursor: pointer; user-select: none; padding: 4px 12px; font-size: 13px; font-weight: 500;
+                    border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+  #opts > summary::-webkit-details-marker { display: none; }
+  #opts > summary::after { content: ' ▾'; color: var(--muted); }
+  #opts[open] > summary { border-color: var(--faint); }
+  .opts-panel { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; min-width: 280px; padding: 12px 14px;
+                display: flex; flex-direction: column; gap: 12px; background: var(--panel); border: 1px solid var(--border);
+                border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .25); }
+  .opts-panel label { justify-content: space-between; }
+  .opts-panel .hint { margin: 0; }
   header label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
   select, input[type=text], textarea, button { font: inherit; color: var(--fg); background: var(--bg);
            border: 1px solid var(--border); border-radius: 6px; }
@@ -273,34 +290,45 @@
   <button id="toggle-files" title="Show or hide the file tree (f)">☰</button>
   <h1 id="title">local-review</h1>
   <label>View
-    <select id="mode">
-      <option value="branch">Branch vs base</option>
+    <select id="mode" title="What to compare">
+      <option value="branch">All commits vs base</option>
+      <option value="commit">One commit at a time</option>
+      <option value="stack" hidden>One stack branch at a time</option>
+      <option value="since">Since my last review</option>
       <option value="working">Uncommitted changes</option>
-      <option value="since">Since last review</option>
-      <option value="stack" hidden>Stack</option>
     </select>
   </label>
-  <label id="base-wrap">Base <input id="base" type="text" size="16"></label>
+  <span id="commit-wrap" hidden>
+    <button id="commit-prev" title="Previous commit ([)">‹</button>
+    <select id="commit-select" title="Commit under review, oldest first"></select>
+    <button id="commit-next" title="Next commit (])">›</button>
+  </span>
   <label id="stack-wrap" hidden>Branch <select id="stack-branch"></select></label>
-  <label>Context
-    <select id="context">
-      <option value="3">3 lines</option>
-      <option value="10">10 lines</option>
-      <option value="100000">Full file</option>
-    </select>
-  </label>
-  <label class="hint" title="Hide changes that only add or remove whitespace (git diff -w)"><input type="checkbox" id="ws"> Hide whitespace</label>
-  <label class="hint" title="Old and new side by side instead of one column (s)"><input type="checkbox" id="sbs"> Side by side</label>
-  <button id="refresh" title="Re-read the working tree (r)">Refresh</button>
   <span class="spacer"></span>
   <span id="totals" tabindex="0" title="Total lines changed in this view"></span>
   <span id="counts" class="hint"></span>
+  <details id="opts">
+    <summary title="Base branch, surrounding code, whitespace and layout">Options</summary>
+    <div class="opts-panel">
+      <label id="base-wrap">Base <input id="base" type="text" size="24"></label>
+      <label title="How much unchanged code to show above and below each change (git diff -U)">Surrounding code
+        <select id="context">
+          <option value="3">3 lines</option>
+          <option value="10">10 lines</option>
+          <option value="100000">Whole file</option>
+        </select>
+      </label>
+      <label title="Hide changes that only add or remove whitespace (git diff -w)"><input type="checkbox" id="ws"> Hide whitespace</label>
+      <label title="Old and new side by side instead of one column (s)"><input type="checkbox" id="sbs"> Side by side</label>
+    </div>
+  </details>
+  <button id="refresh" title="Re-read the working tree (r)">Refresh</button>
   <button id="chat-toggle" title="Chat with the agent (c)">Chat</button>
   <button id="submit" class="primary">Submit review</button>
 </header>
 <div id="banner"><span id="banner-text"></span><button id="banner-reload">Reload diff</button><button id="banner-close" class="link">Dismiss</button></div>
 <div id="layout">
-  <aside id="files"></aside>
+  <aside id="files"><label id="worktree-wrap" hidden>Worktree<select id="worktree" title="Worktrees on this server"></select></label></aside>
   <div id="files-resizer" title="Drag to resize · double-click to reset"></div>
   <main>
     <div id="loading">Loading…</div>
@@ -348,10 +376,17 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 
+// The worktree switcher lives at the top of the file tree, which is rewritten on each render.
+const worktreeEl = $('#worktree-wrap');  // the label and its select
+const worktreeSelect = $('#worktree');
+
+// Served at /w/<id>/: each worktree's API sits under that prefix.
+const BASE = (location.pathname.match(/^\/w\/[^/]+/) || [''])[0];
+
 async function api(path, body) {
   const opts = body === undefined ? {} : {
     method: 'POST', headers: {'Content-Type': 'application/json', 'X-Local-Review': '1'}, body: JSON.stringify(body)};
-  const r = await fetch(path, opts);
+  const r = await fetch(BASE + path, opts);
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
@@ -511,10 +546,25 @@ setFilesWidth(+localStorage.getItem(FILES_W_KEY) || null);
   handle.addEventListener('dblclick', () => { localStorage.removeItem(FILES_W_KEY); setFilesWidth(null); });
 }
 
+// The other worktrees on this server, as a switcher at the top of the file tree (see renderFiles, which keeps it there); hidden when this is the only one.
+async function loadWorktrees() {
+  const sel = worktreeSelect;
+  let worktrees = [];
+  try { worktrees = await (await fetch('/api/worktrees')).json(); } catch (e) { return; }
+  worktreeEl.hidden = worktrees.length < 2;
+  const html = worktrees.map(w =>
+    `<option value="${esc(w.url)}" title="${esc(w.name)} · ${esc(w.root)}">${esc(w.branch)}</option>`).join('');
+  if (sel.innerHTML !== html) sel.innerHTML = html;  // untouched when unchanged, so an open menu stays open
+  sel.value = BASE + '/';
+}
+
 async function init() {
   meta = await api('/api/meta');
   document.title = `review · ${meta.name}`;
   $('#title').textContent = `${meta.name} · ${meta.branch}`;
+  loadWorktrees();
+  worktreeSelect.onfocus = loadWorktrees;
+  worktreeSelect.onchange = () => { location.href = worktreeSelect.value; };
   if (meta.stack) {
     $('#mode option[value=stack]').hidden = false;
     // "N. title", with ● on the checked-out branch: its view includes uncommitted edits.
@@ -526,7 +576,7 @@ async function init() {
     $('#stack-branch').onchange = () => { setPref('stackBranch', $('#stack-branch').value); loadDiff(); };
     $('#stack-branch').title = 'Branch under review (● = checked out, includes uncommitted edits)';
   }
-  $('#mode').value = pref('mode', meta.mode);
+  $('#mode').value = pref('mode', meta.mode === 'stack' ? 'stack' : 'branch');
   if (!meta.stack && $('#mode').value === 'stack') $('#mode').value = 'branch';
   $('#base').value = pref('base', meta.base);
   $('#context').value = pref('context', '3');
@@ -535,7 +585,10 @@ async function init() {
   $('#sbs').checked = sideBySide();
   $('#sbs').onchange = () => setSideBySide($('#sbs').checked);
   $('#mode').onchange = () => { setPref('mode', $('#mode').value); loadDiff(); };
-  $('#base').onchange = () => { setPref('base', $('#base').value.trim()); loadDiff(); };
+  $('#base').onchange = () => { setPref('base', $('#base').value.trim()); commits = null; loadDiff(); };
+  $('#commit-select').onchange = () => { setPref('commit', $('#commit-select').value); loadDiff(); };
+  $('#commit-prev').onclick = () => stepCommit(-1);
+  $('#commit-next').onclick = () => stepCommit(1);
   $('#context').onchange = () => { setPref('context', $('#context').value); loadDiff(); };
   $('#refresh').onclick = () => loadDiff();
   $('#banner-reload').onclick = () => { hideBanner(); loadDiff(); };
@@ -563,12 +616,16 @@ async function init() {
     ticking = true;
     requestAnimationFrame(() => { ticking = false; markCurrentFile(); });
   }, {passive: true});
+  document.addEventListener('click', e => { if (!e.target.closest('#opts')) $('#opts').open = false; });
   document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') $('#opts').open = false;
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.tagName === 'TEXTAREA') {
       const btn = e.target.parentElement.querySelector('button.primary');
       if (btn) { e.preventDefault(); btn.click(); }
     } else if (!['TEXTAREA', 'INPUT', 'SELECT'].includes(e.target.tagName) && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.key === 'r') loadDiff();
+      else if (e.key === '[') stepCommit(-1);
+      else if (e.key === ']') stepCommit(1);
       else if (e.key === 'f') toggleFiles();
       else if (e.key === 's') setSideBySide(!sideBySide());
       else if (e.key === 'c') { e.preventDefault(); setChatOpen(!chatOpen()); }
@@ -579,10 +636,51 @@ async function init() {
   setInterval(poll, 1000);
 }
 
+// The commits the branch adds to the base, oldest first; null until fetched (or the base changed).
+let commits = null;
+
+// Fills the commit picker. False (after saying why) when the branch has no commits to step through.
+async function loadCommits() {
+  if (!commits) {
+    try {
+      commits = (await api(`/api/commits?base=${encodeURIComponent($('#base').value.trim())}`)).commits;
+    } catch (e) {
+      $('#loading').hidden = false;
+      $('#content').hidden = true;
+      $('#loading').innerHTML = `<span class="err">${esc(e.message)}</span>`;
+      return false;
+    }
+    const saved = pref('commit', '');
+    $('#commit-select').innerHTML = commits.map((c, i) =>
+      `<option value="${esc(c.sha)}">${i + 1}/${commits.length} ${esc(c.short)} ${esc(c.subject)}</option>`).join('');
+    $('#commit-select').value = commits.some(c => c.sha === saved) ? saved : (commits[0] || {}).sha;
+  }
+  if (!commits.length) {
+    $('#loading').hidden = false;
+    $('#content').hidden = true;
+    $('#loading').textContent = 'No commits on this branch beyond the base.';
+    return false;
+  }
+  return true;
+}
+
+// Moves the commit picker by `delta` (clamped) and reloads, when it's showing.
+function stepCommit(delta) {
+  const select = $('#commit-select');
+  if ($('#mode').value !== 'commit' || !select.options.length) return;
+  const next = Math.max(0, Math.min(select.options.length - 1, select.selectedIndex + delta));
+  if (next === select.selectedIndex) return;
+  select.selectedIndex = next;
+  setPref('commit', select.value);
+  loadDiff();
+}
+
 async function loadDiff() {
   const mode = $('#mode').value;
-  $('#base-wrap').style.display = mode === 'branch' ? '' : 'none';
+  $('#base-wrap').style.display = mode === 'branch' || mode === 'commit' ? '' : 'none';
   $('#stack-wrap').hidden = mode !== 'stack';
+  $('#commit-wrap').hidden = mode !== 'commit';
+  if (mode === 'commit' && !(await loadCommits())) return;
   $('#mode option[value=since]').disabled = !reviews.length;
   const q = diffParams($('#ws').checked);
   const shown = mode === 'stack' ? $('#stack-branch').value : meta.branch;
@@ -612,6 +710,7 @@ function diffParams(ignoreWs) {
   const mode = $('#mode').value;
   const q = new URLSearchParams({mode, base: $('#base').value.trim(), context: $('#context').value, ws: ignoreWs ? '1' : '0'});
   if (mode === 'stack') q.set('branch', $('#stack-branch').value);
+  if (mode === 'commit') q.set('rev', $('#commit-select').value);
   return q;
 }
 
@@ -930,6 +1029,7 @@ function renderFileList() {
     filter +
     trees.map(t => (t.kind ? `<div class="group">${KIND_LABEL[t.kind]}${linesHtml(sumLines(t.entries.map(e => e.f)))}</div>` : '') +
       treeHtml(t.tree, 0, counts).html).join('');
+  $('#files').prepend(worktreeEl);  // the rewrite above removed it
   markCurrentFile();
 }
 

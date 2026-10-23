@@ -24,7 +24,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 import webbrowser
@@ -378,8 +380,29 @@ def resolve_ref(repo, ref):
     raise UserError(f"unknown ref: {ref}")
 
 
-def resolve_view(repo, mode, base, branch=None, stack=None):
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def commits_on_branch(repo, base):
+    """The commits a branch adds to `base`, oldest first, as {sha, short, subject}."""
+    if not repo.rev(base):
+        raise UserError(f"unknown base ref: {base}")
+    fork = repo.g("merge-base", base, "HEAD").strip()
+    log = repo.g("log", "--reverse", "--format=%H%x00%h%x00%s", f"{fork}..HEAD")
+    rows = [ln.split("\0") for ln in log.split("\n") if ln]
+    return [{"sha": sha, "short": short, "subject": subject} for sha, short, subject in rows]
+
+
+def resolve_view(repo, mode, base, branch=None, stack=None, rev=None):
     """Returns (old_rev, new_tree, description) for a diff mode, snapshotting the working tree."""
+    if mode == "commit":
+        if not rev:
+            raise UserError("commit view needs a commit")
+        sha = resolve_ref(repo, rev)
+        has_parent = bool(repo.g("rev-parse", "--verify", "--quiet", f"{sha}^", check=False).strip())
+        old = repo.g("rev-parse", f"{sha}^").strip() if has_parent else EMPTY_TREE
+        subject = repo.g("log", "-1", "--format=%s", sha).strip()
+        return old, repo.g("rev-parse", f"{sha}^{{tree}}").strip(), f"{sha[:8]} {subject} (committed)"
     if mode == "stack":
         phase = stack_phase(stack, branch)
         tip = resolve_ref(repo, branch)
@@ -411,7 +434,7 @@ def resolve_view(repo, mode, base, branch=None, stack=None):
     return old, new_tree, label
 
 
-def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=False, paths=None, trees=None):
+def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=False, paths=None, trees=None, rev=None):
     """Diff for a view. `ignore_ws` hides whitespace-only changes (`git diff -w`); line numbers are
     unaffected, so comments still anchor. `paths` limits the diff to those files, for re-fetching one.
 
@@ -424,7 +447,7 @@ def compute_diff(repo, mode, base, context, branch=None, stack=None, ignore_ws=F
             raise UserError("unknown old_rev/new_tree")
         label = ""
     else:
-        old, new_tree, label = resolve_view(repo, mode, base, branch, stack)
+        old, new_tree, label = resolve_view(repo, mode, base, branch, stack, rev)
     args = ["diff", "--no-color", "--no-ext-diff", "-M", f"-U{context}", "--src-prefix=a/", "--dst-prefix=b/"]
     if ignore_ws:
         args.append("-w")
@@ -724,6 +747,7 @@ def watching(repo):
 class App:
     def __init__(self, repo, base, mode, stack=None):
         self.repo, self.base, self.mode, self.stack = repo, base, mode, stack
+        self.args = None  # what serve was given, for the hub to remember (see make_app)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -732,9 +756,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    _app = None
+
     @property
     def app(self):
-        return self.server.app
+        return self._app
+
+    def _resolve(self, u):
+        """Picks the worktree a request is for and rewrites self.path to the route within it."""
+        m = re.match(r"^/w/([^/]+)(/.*)?$", u.path)
+        if m:
+            with self.server.hub.lock:
+                app = self.server.hub.apps.get(m.group(1))
+            rest = m.group(2) or "/"
+        else:
+            app, rest = self.server.hub.first(), u.path
+        if app is None:
+            self._json({"error": "no such worktree"}, 404)
+            return False
+        self._app = app
+        self.path = rest + ("?" + u.query if u.query else "")
+        return True
 
     def _host_ok(self):
         # Guards against DNS-rebinding: only answer requests addressed to loopback names.
@@ -765,8 +807,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._send(403, b"forbidden", "text/plain")
         u = urlparse(self.path)
+        if u.path == "/api/worktrees":
+            return self._json(self.server.hub.listing())
+        if u.path == "/":
+            first = self.server.hub.first_id()
+            if first is None:
+                return self._json({"error": "no worktrees attached"}, 404)
+            self.send_response(302)
+            self.send_header("Location", f"/w/{first}/")
+            self.send_header("Content-Length", "0")
+            return self.end_headers()
+        if not u.path.startswith("/vendor/"):
+            if not self._resolve(u):
+                return
+            u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        repo = self.app.repo
+        repo = self.app.repo if self.app else None
         try:
             if u.path == "/":
                 with open(os.path.join(HERE, "ui.html"), "rb") as f:
@@ -789,7 +845,9 @@ class Handler(BaseHTTPRequestHandler):
                 paths = [p for p in (q.get("old_path"), q.get("path")) if p]
                 trees = (q["old_rev"], q["new_tree"]) if paths and q.get("old_rev") and q.get("new_tree") else None
                 self._json(compute_diff(repo, q.get("mode", self.app.mode), q.get("base") or self.app.base, context,
-                                        q.get("branch"), self.app.stack, q.get("ws") == "1", paths or None, trees))
+                                        q.get("branch"), self.app.stack, q.get("ws") == "1", paths or None, trees, q.get("rev")))
+            elif u.path == "/api/commits":
+                self._json({"commits": commits_on_branch(repo, q.get("base") or self.app.base)})
             elif u.path == "/api/comments":
                 self._json(self._comments_payload())
             elif u.path == "/api/version":
@@ -807,6 +865,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
             data = json.loads(self.rfile.read(length) or b"{}")
+            if u.path == "/api/attach":
+                app = make_app(Repo(data["root"]), data.get("base"), data.get("mode"), data.get("stack"))
+                wid = self.server.hub.add(app)
+                self.server.hub.save()
+                return self._json({"id": wid, "url": f"/w/{wid}/"})
+            if u.path == "/api/detach":
+                removed = self.server.hub.remove(data["root"])
+                self.server.hub.save()
+                return self._json({"removed": removed})
+            if not self._resolve(u):
+                return
+            u = urlparse(self.path)
             repo = self.app.repo
             m = re.match(r"^/api/comments/([\w-]+)/(edit|delete|reply|status)$", u.path)
             if u.path == "/api/comments":
@@ -896,48 +966,163 @@ def cmd_clean(repo, args):
     verb = "Would remove" if args.dry_run else "Removed"
     print(f"{verb} {len(dropped)} thread(s) (archived to {archive_path}), {len(drop_reviews)} old snapshot(s), "
           f"{len(orphans)} orphaned snapshot(s).")
+    if not args.dry_run and detach(getattr(args, "port", None) or DEFAULT_PORT, repo.root):
+        print("Stopped serving this worktree's review (`local-review serve` brings it back).")
 
 
-def probe(port):
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/meta", timeout=0.5) as r:
-            return json.load(r)
-    except Exception:
-        return None
+DEFAULT_PORT = 7400
 
 
-def cmd_serve(repo, args):
-    base = args.base or repo.default_base()
+def hub_file():
+    return os.path.join(os.environ.get("LOCAL_REVIEW_HOME") or os.path.expanduser("~/.local-review"), "worktrees.json")
+
+
+class Hub:
+    """The worktrees one server serves. Each is an App, reached under /w/<id>/; a request without that
+    prefix goes to the first one. What was attached is remembered, so a restarted server serves them again."""
+
+    def __init__(self):
+        self.apps = {}
+        self.lock = threading.Lock()
+
+    def add(self, app):
+        """Attaches a worktree (attaching it again replaces it, e.g. with another base) and returns its id."""
+        root = app.repo.root
+        wid = re.sub(r"[^\w.-]", "-", os.path.basename(root)) or "repo"
+        with self.lock:
+            if wid in self.apps and self.apps[wid].repo.root != root:
+                wid += "-" + hashlib.sha1(root.encode()).hexdigest()[:4]
+            self.apps[wid] = app
+        return wid
+
+    def remove(self, root):
+        with self.lock:
+            gone = [wid for wid, app in self.apps.items() if app.repo.root == root]
+            for wid in gone:
+                del self.apps[wid]
+        return bool(gone)
+
+    def first(self):
+        with self.lock:
+            return next(iter(self.apps.values()), None)
+
+    def first_id(self):
+        with self.lock:
+            return next(iter(self.apps), None)
+
+    def listing(self):
+        with self.lock:
+            items = list(self.apps.items())
+        return [{"id": wid, "url": f"/w/{wid}/", "root": app.repo.root, "name": os.path.basename(app.repo.root),
+                 "branch": app.repo.branch(), "base": app.base, "mode": app.mode} for wid, app in items]
+
+    def save(self):
+        with self.lock:
+            specs = [{"root": app.repo.root, **app.args} for app in self.apps.values() if app.args]
+        os.makedirs(os.path.dirname(hub_file()), exist_ok=True)
+        with open(hub_file(), "w") as f:
+            json.dump(specs, f, indent=1)
+
+    def load(self):
+        try:
+            with open(hub_file()) as f:
+                specs = json.load(f)
+        except (OSError, ValueError):
+            return
+        for spec in specs:
+            try:
+                self.add(make_app(Repo(spec["root"]), spec.get("base"), spec.get("mode"), spec.get("stack")))
+            except (UserError, OSError, KeyError, subprocess.CalledProcessError):
+                pass  # the worktree is gone, or its base or stack no longer resolves
+
+
+def make_app(repo, base, mode, stack_path):
+    """Resolves serve's defaults for a worktree: the base, the stack, and the view to open."""
+    args = {"base": base, "mode": mode, "stack": stack_path}
+    base = base or repo.default_base()
     if not repo.rev(base):
         raise UserError(f"unknown base ref: {base}")
-    stack = load_stack(repo, getattr(args, "stack", None))
-    mode = args.mode
+    stack = load_stack(repo, stack_path)
     if mode is None:
         # A stack that includes the checked-out branch is almost certainly what's under review.
         on_stack = bool(stack) and any(p["branch"] == repo.branch() for p in stack["phases"])
         mode = "stack" if on_stack else "branch"
     if mode == "stack" and not stack:
         raise UserError("stack view needs a stack.conf at the repo root (or --stack FILE)")
-    port = args.port or 7400 + int(hashlib.sha1(repo.root.encode()).hexdigest(), 16) % 500
+    app = App(repo, base, mode, stack)
+    app.args = args
+    return app
+
+
+def attach(port, spec):
+    """Asks the server on [port] to serve a worktree; returns its path on that server."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/attach", data=json.dumps(spec).encode(),
+                                 method="POST", headers={"X-Local-Review": "1", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)["url"]
+    except urllib.error.HTTPError as e:
+        raise UserError(json.load(e).get("error", "attach failed"))
+
+
+def detach(port, root):
+    """Asks the server on [port] to stop serving a worktree; False when there's no server or it wasn't attached."""
+    if probe(port) is None:
+        return False
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/detach", data=json.dumps({"root": root}).encode(),
+                                 method="POST", headers={"X-Local-Review": "1", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)["removed"]
+
+
+def cmd_detach(repo, args):
+    removed = detach(args.port or DEFAULT_PORT, repo.root)
+    print(f"local-review: {repo.root} " + ("detached" if removed else "was not attached"))
+
+
+def cmd_worktrees(args):
+    listing = probe(args.port or DEFAULT_PORT)
+    if listing is None:
+        print("no local-review server running")
+    for e in listing or []:
+        print(f"{e['id']}  {e['branch']}  (base {e['base']}, {e['mode']})  {e['root']}")
+
+
+def probe(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/worktrees", timeout=0.5) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def cmd_serve(repo, args):
+    port = args.port or DEFAULT_PORT
+    stack_path = os.path.abspath(args.stack) if args.stack else None
     try:
         prune_orphans(repo)
     except UserError:
         pass  # housekeeping only; never block opening the UI
-    running = probe(port)
-    if running and running.get("root") == repo.root:
-        url = f"http://127.0.0.1:{port}/"
-        print(f"local-review already running for {repo.root}: {url}")
+    if probe(port) is not None:
+        # A server is already up: it serves this worktree too.
+        url = f"http://127.0.0.1:{port}" + attach(port, {"root": repo.root, "base": args.base, "mode": args.mode,
+                                                         "stack": stack_path})
+        print(f"local-review: {repo.root} attached to the server on :{port}\n  url:  {url}")
         if not args.no_open:
             webbrowser.open(url)
         return
+    app = make_app(repo, args.base, args.mode, stack_path)
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    httpd.app = App(repo, base, mode, stack)
-    url = f"http://127.0.0.1:{httpd.server_address[1]}/"
-    where = f"stack: {len(stack['phases'])} branches on {stack['trunk']}" if mode == "stack" else f"base: {base}"
-    print(f"local-review: {repo.root}\n  {where}\n  url:  {url}\n(Ctrl-C to stop)", flush=True)
+    httpd.hub = Hub()
+    httpd.hub.load()
+    wid = httpd.hub.add(app)
+    httpd.hub.save()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/w/{wid}/"
+    where = f"stack: {len(app.stack['phases'])} branches on {app.stack['trunk']}" if app.mode == "stack" else f"base: {app.base}"
+    print(f"local-review: {repo.root}\n  {where}\n  url:  {url}\n  serving {len(httpd.hub.apps)} worktree(s)\n(Ctrl-C to stop)", flush=True)
     if not args.no_open:
         webbrowser.open(url)
     try:
@@ -1177,11 +1362,17 @@ def main():
 
     s = sub.add_parser("serve", help="open the review UI (default command)")
     s.add_argument("--base", help="base ref for branch mode (default: origin/HEAD)")
-    s.add_argument("--mode", choices=["branch", "working", "since", "stack"],
+    s.add_argument("--mode", choices=["branch", "commit", "working", "since", "stack"],
                    help="default: stack when stack.conf lists the checked-out branch, else branch")
     s.add_argument("--stack", help="stack.conf path (default: <repo>/stack.conf)")
-    s.add_argument("--port", type=int)
+    s.add_argument("--port", type=int, help=f"the server's port; worktrees join a server already on it (default {DEFAULT_PORT})")
     s.add_argument("--no-open", action="store_true", help="don't open a browser")
+
+    s = sub.add_parser("detach", help="stop serving this worktree's review (its comments are kept)")
+    s.add_argument("--port", type=int)
+
+    s = sub.add_parser("worktrees", help="list the worktrees the review server is serving")
+    s.add_argument("--port", type=int)
 
     s = sub.add_parser("list", help="print open review comments (for the agent)")
     s.add_argument("--all", action="store_true", help="include replied/addressed/resolved")
@@ -1210,6 +1401,7 @@ def main():
     s.add_argument("--all", action="store_true", help="discard this worktree's whole review, incl. latest snapshot")
     s.add_argument("--force", action="store_true", help="with --all: discard even draft/open comments")
     s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--port", type=int, help="the server to detach this worktree from (default 7400)")
 
     s = sub.add_parser("watch", help="print a line whenever a review, reply or chat message arrives (for agents)")
     s.add_argument("--once", action="store_true", help="exit after the first event")
@@ -1219,8 +1411,10 @@ def main():
     if args.cmd is None:
         args = p.parse_args(sys.argv[1:] + ["serve"])
     try:
+        if args.cmd == "worktrees":
+            return cmd_worktrees(args)
         repo = Repo(args.path)
-        {"serve": cmd_serve, "list": cmd_list, "reply": cmd_reply, "chat": cmd_chat, "status": cmd_status,
+        {"serve": cmd_serve, "detach": cmd_detach, "list": cmd_list, "reply": cmd_reply, "chat": cmd_chat, "status": cmd_status,
          "watch": cmd_watch, "clean": cmd_clean}[args.cmd](repo, args)
     except UserError as e:
         if getattr(args, "hook", False):
