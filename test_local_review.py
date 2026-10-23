@@ -54,6 +54,31 @@ class LocalReviewTest(unittest.TestCase):
     def files(self, mode):
         return {f["path"]: f for f in lr.compute_diff(self.repo, mode, "main", 3)["files"]}
 
+    def test_commit_view_steps_through_the_branch_one_commit_at_a_time(self):
+        self.write("Bar.kt", "fun c() {}\n")
+        sh(self.dir, "git", "add", "Bar.kt")
+        sh(self.dir, "git", "commit", "-qm", "add Bar")
+        commits = lr.commits_on_branch(self.repo, "main")
+
+        self.assertEqual([c["subject"] for c in commits], ["feat", "add Bar"])
+        first, second = (lr.compute_diff(self.repo, "commit", "main", 3, rev=c["sha"]) for c in commits)
+        self.assertEqual({f["path"] for f in first["files"]}, {"Foo.kt", "Gone.txt"})
+        self.assertEqual({f["path"] for f in second["files"]}, {"Bar.kt"})
+        self.assertIn("add Bar", second["label"])
+        # Untracked files belong to no commit.
+        self.assertNotIn("New File.md", {f["path"] for f in first["files"] + second["files"]})
+
+    def test_commit_view_of_a_root_commit_shows_everything_it_added(self):
+        root = self.repo.g("rev-list", "--max-parents=0", "HEAD").strip()
+
+        self.assertEqual({f["path"] for f in lr.compute_diff(self.repo, "commit", "main", 3, rev=root)["files"]}, {"Foo.kt", "Gone.txt"})
+
+    def test_commit_view_needs_a_known_commit(self):
+        with self.assertRaises(lr.UserError):
+            lr.compute_diff(self.repo, "commit", "main", 3)
+        with self.assertRaises(lr.UserError):
+            lr.compute_diff(self.repo, "commit", "main", 3, rev="nope")
+
     def test_modes_and_untracked(self):
         branch = self.files("branch")
         self.assertEqual(branch["Foo.kt"]["status"], "modified")
@@ -343,9 +368,55 @@ class LocalReviewTest(unittest.TestCase):
         self.assertIsNone(lr.locate(["x", "}", "y"], {"line": 2, "line_text": "}", "before": ["a"], "after": ["b"]}))
         self.assertEqual(lr.locate(["a", "}", "b"], {"line": 9, "line_text": "}", "before": ["a"], "after": ["b"]}), 2)
 
+    def test_one_server_many_worktrees(self):
+        os.environ["LOCAL_REVIEW_HOME"] = tempfile.mkdtemp(prefix="lr-home-")
+        self.addCleanup(os.environ.pop, "LOCAL_REVIEW_HOME", None)
+        other = tempfile.mkdtemp(prefix="lr-other-")
+        sh(other, "git", "init", "-q", "-b", "main")
+        sh(other, "git", "config", "user.email", "t@t")
+        sh(other, "git", "config", "user.name", "t")
+        sh(other, "git", "commit", "-q", "--allow-empty", "-m", "base")
+        httpd = lr.ThreadingHTTPServer(("127.0.0.1", 0), lr.Handler)
+        httpd.hub = lr.Hub()
+        first = httpd.hub.add(lr.App(self.repo, "main", "branch"))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        port = httpd.server_address[1]
+        url = f"http://127.0.0.1:{port}"
+
+        # Attach another worktree the way a second `serve` does.
+        path = lr.attach(port, {"root": other, "base": "HEAD", "mode": None, "stack": None})
+        second = path.split("/")[2]
+        listing = lr.probe(port)
+        self.assertEqual({w["id"] for w in listing}, {first, second})
+        for wid, root in ((first, self.repo.root), (second, os.path.realpath(other))):
+            with urllib.request.urlopen(f"{url}/w/{wid}/api/meta") as r:
+                self.assertEqual(os.path.realpath(json.load(r)["root"]), os.path.realpath(root))
+        with urllib.request.urlopen(url + "/") as r:  # no prefix: redirected to the first worktree
+            self.assertEqual(r.geturl(), f"{url}/w/{first}/")
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(f"{url}/w/nope/api/meta")
+        self.assertEqual(e.exception.code, 404)
+        e.exception.close()
+        with self.assertRaises(lr.UserError):
+            lr.attach(port, {"root": other, "base": "no-such-ref", "mode": None, "stack": None})
+
+        # Attached worktrees are remembered, and can be detached.
+        self.assertEqual([s["root"] for s in json.load(open(lr.hub_file()))], [os.path.realpath(other)])
+        again = lr.Hub()
+        again.load()
+        self.assertEqual([a.repo.root for a in again.apps.values()], [os.path.realpath(other)])
+        req = urllib.request.Request(url + "/api/detach", data=json.dumps({"root": os.path.realpath(other)}).encode(),
+                                     method="POST", headers={"X-Local-Review": "1"})
+        with urllib.request.urlopen(req) as r:
+            self.assertTrue(json.load(r)["removed"])
+        self.assertEqual({w["id"] for w in lr.probe(port)}, {first})
+        self.assertEqual(json.load(open(lr.hub_file())), [])
+
     def test_http_guards(self):
         httpd = lr.ThreadingHTTPServer(("127.0.0.1", 0), lr.Handler)
-        httpd.app = lr.App(self.repo, "main", "branch")
+        httpd.hub = lr.Hub()
+        httpd.hub.add(lr.App(self.repo, "main", "branch"))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         url = f"http://127.0.0.1:{httpd.server_address[1]}"
         try:
